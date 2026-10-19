@@ -3,7 +3,7 @@ from pathlib import Path
 from collections import OrderedDict
 from PIL.ImageQt import ImageQt
 from PySide6.QtCore import Qt, QSize, QRectF, Signal, QObject, QRunnable, QThreadPool, QTimer
-from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKeySequence
+from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKeySequence, QFontDatabase, QFont
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem,
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
     QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea)
@@ -305,5 +305,10 @@ class Window(QMainWindow):
 
 if __name__=='__main__':
     app=QApplication(sys.argv); app.setStyle('Fusion')
+    font_path=Path('C:/Windows/Fonts/malgun.ttf')
+    if font_path.exists():
+        font_id=QFontDatabase.addApplicationFont(str(font_path))
+        families=QFontDatabase.applicationFontFamilies(font_id)
+        if families: app.setFont(QFont(families[0], 10))
     app.setStyleSheet('QWidget {font-family: "Malgun Gothic"; font-size: 12px;} QPushButton {padding: 8px 12px;} QListWidget {background:#202630;color:#eef2f8;} QListWidget::item:selected {background:#355e89;}')
     window=Window(); window.show(); sys.exit(app.exec())
