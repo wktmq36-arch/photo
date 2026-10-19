@@ -54,20 +54,25 @@ class ImageList(QListWidget):
             self.press_position=event.position().toPoint()
             self.drag_ids=[self.item(row).data(Qt.ItemDataRole.UserRole) for row in range(self.count()) if self.item(row).isSelected()]
     def target_at(self,pos):
-        index=self.indexAt(pos)
-        if index.isValid():
-            return index.row()+(pos.x()>=self.visualRect(index).center().x())
-        # Gaps between tiles map to the closest tile, including blank row ends.
-        candidates=[]
+        if not self.count():return 0
+        # Pick the visual row by Y first. X must never pull a row-end drop
+        # toward the first item of the next row.
+        bands={}
         for row in range(self.count()):
             rect=self.visualItemRect(self.item(row))
-            if rect.bottom()<0 or rect.top()>self.viewport().height():continue
-            dx=max(rect.left()-pos.x(),0,pos.x()-rect.right())
-            dy=max(rect.top()-pos.y(),0,pos.y()-rect.bottom())
-            candidates.append((dx*dx+dy*dy,row,rect))
-        if not candidates:return self.count()
-        _,row,rect=min(candidates,key=lambda value:value[0])
-        return row+(pos.x()>=rect.center().x())
+            bands.setdefault(rect.top(),[]).append((row,rect))
+        band=min(bands.values(),key=lambda items:abs(items[0][1].center().y()-pos.y()))
+        band.sort(key=lambda pair:pair[1].center().x())
+        if pos.y()>max(rect.bottom() for _,rect in band)+self.gridSize().height()/2:
+            row,rect=band[-1];target=row+1;marker=rect.right()+3
+        else:
+            for row,rect in band:
+                if pos.x()<rect.center().x():
+                    target=row;marker=rect.left()-3;break
+            else:
+                row,rect=band[-1];target=row+1;marker=rect.right()+3
+        self.drop_marker=(max(3,min(self.viewport().width()-3,marker)),rect.top(),rect.bottom())
+        return target
     def mouseMoveEvent(self,event):
         if self.press_position is not None:
             pos=event.position().toPoint()
@@ -96,11 +101,11 @@ class ImageList(QListWidget):
         super().paintEvent(event)
         if self.drop_target is None or not self.count():return
         painter=QPainter(self.viewport()); painter.setPen(QPen(QColor('#ffab40'),4))
-        if self.drop_target<self.count():
-            rect=self.visualItemRect(self.item(self.drop_target)); x=rect.left()-2
-        else:
-            rect=self.visualItemRect(self.item(self.count()-1)); x=rect.right()+2
-        painter.drawLine(x,rect.top(),x,rect.bottom())
+        if hasattr(self,'drop_marker'):
+            x,top,bottom=self.drop_marker
+            painter.drawLine(x,top,x,bottom)
+            painter.drawLine(x-5,top,x+5,top)
+            painter.drawLine(x-5,bottom,x+5,bottom)
     MIME = 'application/x-photo-item-ids'
     def startDrag(self, supported_actions):
         ids=[self.item(row).data(Qt.ItemDataRole.UserRole) for row in range(self.count()) if self.item(row).isSelected()]
@@ -195,7 +200,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.1'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.2'); self.resize(1400,900)
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.dirty=False; self.project=None
         self.pool=QThreadPool(self); self.pool.setMaxThreadCount(4)
         self.preview_pool=QThreadPool(self); self.preview_pool.setMaxThreadCount(2)

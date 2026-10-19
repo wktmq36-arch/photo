@@ -139,4 +139,32 @@ class Tests(unittest.TestCase):
     with Image.open(out) as result,Image.open(expected[i]) as original:self.assertEqual(result.getpixel((0,0))[:3],original.getpixel((0,0)))
    while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
    w.dirty=False;w.close()
+ def test_three_column_row_edges(self):
+  from PySide6.QtCore import Qt,QPoint
+  from PySide6.QtTest import QTest
+  from PySide6.QtWidgets import QListWidgetItem
+  from main import ImageList
+  app=QApplication.instance() or QApplication([])
+  view=ImageList();view.resize(530,400)
+  for i in range(1,7):
+   item=QListWidgetItem(str(i));item.setData(Qt.ItemDataRole.UserRole,str(i));view.addItem(item)
+  view.show();app.processEvents()
+  self.assertEqual(view.visualItemRect(view.item(0)).top(),view.visualItemRect(view.item(2)).top())
+  self.assertGreater(view.visualItemRect(view.item(3)).top(),view.visualItemRect(view.item(2)).top())
+  def drag(source,pos):
+   start=view.visualItemRect(view.item(source)).center()
+   QTest.mousePress(view.viewport(),Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,start)
+   QTest.mouseMove(view.viewport(),pos,30);app.processEvents()
+   self.assertTrue(view.dragging)
+   marker=view.drop_marker
+   QTest.mouseRelease(view.viewport(),Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,pos);app.processEvents()
+   return marker
+  first_row=view.visualItemRect(view.item(2))
+  marker=drag(1,QPoint(view.viewport().width()+20,first_row.center().y()))
+  self.assertEqual([view.item(i).text() for i in range(6)],['1','3','2','4','5','6'])
+  self.assertEqual(marker[1],first_row.top())
+  first_row=view.visualItemRect(view.item(0))
+  drag(2,QPoint(-20,first_row.center().y()))
+  self.assertEqual([view.item(i).text() for i in range(6)],['2','1','3','4','5','6'])
+  view.close()
 if __name__=='__main__':unittest.main()
