@@ -73,4 +73,30 @@ class Tests(unittest.TestCase):
    self.assertEqual(len(w.current()['regions']),1)
    w.undo(); self.assertFalse(w.current()['regions'])
    w.dirty=False; w.close()
+ def test_drop_reorders_export_and_undo(self):
+  import json
+  from PySide6.QtCore import Qt,QMimeData,QPointF
+  from PySide6.QtGui import QDropEvent
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths=[]
+   for i,color in enumerate(['red','green','blue']):
+    p=Path(d)/f'{i}.png'; Image.new('RGB',(80,60),color).save(p); paths.append(str(p))
+   w=Window(); w.show(); w.add_paths(paths); app.processEvents()
+   deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   ids=[e['id'] for e in w.ordered()]
+   mime=QMimeData(); mime.setData(w.list.MIME,json.dumps([ids[0]]).encode())
+   index=w.list.model().index(2,0); rect=w.list.visualRect(index)
+   drop=QDropEvent(QPointF(rect.right()-2,rect.center().y()),Qt.DropAction.MoveAction,mime,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)
+   w.list.dropEvent(drop)
+   self.assertTrue(drop.isAccepted()); self.assertEqual([e['path'] for e in w.ordered()],[paths[1],paths[2],paths[0]])
+   self.assertEqual(w.list.count(),3)
+   out=Path(d)/'001.png';export_image(w.ordered()[0],out,'PNG')
+   with Image.open(out) as result:self.assertEqual(result.getpixel((0,0))[:3],(0,128,0))
+   w.undo(); self.assertEqual([e['path'] for e in w.ordered()],paths)
+   w.list.move_ids([ids[1],ids[2]],0)
+   self.assertEqual([e['path'] for e in w.ordered()],[paths[1],paths[2],paths[0]])
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close()
 if __name__=='__main__':unittest.main()

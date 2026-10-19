@@ -1,8 +1,8 @@
 import sys, json, uuid, copy, time
 from pathlib import Path
 from collections import OrderedDict
-from PySide6.QtCore import Qt, QSize, QRectF, Signal, QObject, QRunnable, QThreadPool, QTimer
-from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKeySequence, QFontDatabase, QFont, QShortcut
+from PySide6.QtCore import Qt, QSize, QRectF, Signal, QObject, QRunnable, QThreadPool, QTimer, QMimeData
+from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKeySequence, QFontDatabase, QFont, QShortcut, QDrag
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem,
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
     QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea)
@@ -33,8 +33,9 @@ class ImageList(QListWidget):
         self.setViewMode(QListWidget.ViewMode.IconMode)
         self.setIconSize(QSize(140, 110)); self.setGridSize(QSize(164, 150))
         self.setResizeMode(QListWidget.ResizeMode.Adjust)
-        self.setMovement(QListWidget.Movement.Snap)
-        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setMovement(QListWidget.Movement.Static)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
+        self.setDragEnabled(True); self.setDropIndicatorShown(True)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setSpacing(5); self.setAcceptDrops(True)
@@ -54,25 +55,49 @@ class ImageList(QListWidget):
         if self.empty_press:
             self.empty_press=False; event.accept(); return
         super().mouseReleaseEvent(event)
+    MIME = 'application/x-photo-item-ids'
+    def startDrag(self, supported_actions):
+        ids=[self.item(row).data(Qt.ItemDataRole.UserRole) for row in range(self.count()) if self.item(row).isSelected()]
+        if not ids:return
+        mime=QMimeData(); mime.setData(self.MIME,json.dumps(ids).encode('utf-8'))
+        drag=QDrag(self); drag.setMimeData(mime)
+        item=self.currentItem()
+        if item and not item.icon().isNull():drag.setPixmap(item.icon().pixmap(100,80))
+        # Own the entire move: Qt's built-in source cleanup must not remove rows again.
+        drag.exec(Qt.DropAction.MoveAction)
     def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls(): event.acceptProposedAction()
-        else: super().dragEnterEvent(event)
+        if event.mimeData().hasUrls() or event.mimeData().hasFormat(self.MIME):event.acceptProposedAction()
+        else:event.ignore()
     def dragMoveEvent(self, event):
-        if event.mimeData().hasUrls(): event.acceptProposedAction()
-        else: super().dragMoveEvent(event)
+        if event.mimeData().hasUrls() or event.mimeData().hasFormat(self.MIME):event.acceptProposedAction()
+        else:event.ignore()
+    def move_ids(self, ids, target):
+        rows=[row for row in range(self.count()) if self.item(row).data(Qt.ItemDataRole.UserRole) in ids]
+        if not rows:return
+        target=max(0,min(self.count(),target))
+        remaining=[self.item(row).data(Qt.ItemDataRole.UserRole) for row in range(self.count()) if row not in rows]
+        moving=[self.item(row).data(Qt.ItemDataRole.UserRole) for row in rows]
+        target-=sum(row<target for row in rows)
+        if remaining[:target]+moving+remaining[target:]==[self.item(row).data(Qt.ItemDataRole.UserRole) for row in range(self.count())]:return
+        self.reordering.emit(); self.blockSignals(True)
+        items=[self.takeItem(row) for row in reversed(rows)][::-1]
+        for offset,item in enumerate(items):self.insertItem(target+offset,item)
+        self.clearSelection()
+        self.setCurrentItem(items[0])
+        for item in items:item.setSelected(True)
+        self.blockSignals(False); self.doItemsLayout()
+        self.currentItemChanged.emit(items[0],None); self.reordered.emit()
     def dropEvent(self, event):
         if event.mimeData().hasUrls():
             self.dropped.emit([url.toLocalFile() for url in event.mimeData().urls()]); event.acceptProposedAction()
-        else:
-            self.reordering.emit()
-            target = self.indexAt(event.position().toPoint()).row()
-            if target < 0: target = self.count()
-            rows = sorted(self.row(item) for item in self.selectedItems())
-            target -= sum(row < target for row in rows)
-            items = [self.takeItem(row) for row in reversed(rows)][::-1]
-            for offset, item in enumerate(items): self.insertItem(target+offset, item)
-            if items: self.setCurrentItem(items[0])
-            event.acceptProposedAction(); self.reordered.emit()
+        elif event.mimeData().hasFormat(self.MIME):
+            try:ids=json.loads(bytes(event.mimeData().data(self.MIME)).decode('utf-8'))
+            except (ValueError,UnicodeDecodeError):event.ignore(); return
+            pos=event.position().toPoint(); index=self.indexAt(pos); target=index.row()
+            if target<0:target=self.count()
+            elif pos.x()>=self.visualRect(index).center().x():target+=1
+            self.move_ids(ids,target); event.setDropAction(Qt.DropAction.MoveAction); event.accept()
+        else:event.ignore()
 
 class Canvas(QWidget):
     selected = Signal(object)
