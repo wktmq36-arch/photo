@@ -1,13 +1,17 @@
 import sys, json, uuid, copy, time
 from pathlib import Path
 from collections import OrderedDict
-from PIL.ImageQt import ImageQt
 from PySide6.QtCore import Qt, QSize, QRectF, Signal, QObject, QRunnable, QThreadPool, QTimer
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKeySequence, QFontDatabase, QFont
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem,
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
     QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea)
 from imaging import EXTENSIONS, read_pixels, render_regions, export_image
+
+def to_qimage(image):
+    rgba = image.convert('RGBA')
+    return QImage(rgba.tobytes(), rgba.width, rgba.height, rgba.width * 4,
+                  QImage.Format.Format_RGBA8888).copy()
 
 class Signals(QObject):
     done = Signal(object)
@@ -159,7 +163,7 @@ class Window(QMainWindow):
         self.run_job(self.pool,lambda:self.load_thumb(path),lambda result,eid=entry['id']:self.thumb_ready(eid,result))
     @staticmethod
     def load_thumb(path):
-        image=read_pixels(path); image.thumbnail((140,110)); return QImage(ImageQt(image)).copy()
+        image=read_pixels(path); image.thumbnail((140,110)); return to_qimage(image)
     def thumb_ready(self,eid,result):
         if not result[0]:
             if eid in self.entries: self.status.setText('읽기 실패: '+self.entries[eid]['path'])
@@ -237,7 +241,7 @@ class Window(QMainWindow):
         if not entry or entry['path'] not in self.cache:return
         image=self.cache[entry['path']]
         image=image if self.original.isChecked() else render_regions(image,entry['regions'])
-        self.canvas.pixmap=QPixmap.fromImage(QImage(ImageQt(image)))
+        self.canvas.pixmap=QPixmap.fromImage(to_qimage(image))
         self.canvas.regions=[] if self.original.isChecked() else entry['regions']; self.canvas.update()
     def region_event(self,event):
         entry=self.current()
@@ -311,4 +315,12 @@ if __name__=='__main__':
         families=QFontDatabase.applicationFontFamilies(font_id)
         if families: app.setFont(QFont(families[0], 10))
     app.setStyleSheet('QWidget {font-family: "Malgun Gothic"; font-size: 12px;} QPushButton {padding: 8px 12px;} QListWidget {background:#202630;color:#eef2f8;} QListWidget::item:selected {background:#355e89;}')
-    window=Window(); window.show(); sys.exit(app.exec())
+    window=Window(); window.show()
+    if '--smoke-test' in sys.argv:
+        from PIL import Image
+        sample=to_qimage(Image.new('RGBA',(32,32),(12,34,56,255)))
+        assert sample.pixelColor(0,0).red()==12
+        window.canvas.pixmap=QPixmap.fromImage(sample)
+        window.canvas.update()
+        QTimer.singleShot(1000,app.quit)
+    sys.exit(app.exec())
