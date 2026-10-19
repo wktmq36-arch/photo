@@ -125,25 +125,27 @@ def strip_metadata(source, destination):
         if check.getexif() or set(check.info)&{'exif','xmp','XML:com.adobe.xmp','icc_profile','comment','Comment','parameters','prompt','workflow'}:
             raise RuntimeError('원본 메타데이터 제거 검증 실패')
 
-def export_pair(entry, index, destination, fmt, stem):
-    destination=Path(destination)
-    censored=destination/(stem+'_cen'); original=destination/(stem+'_uncen')
-    censored.mkdir(exist_ok=True); original.mkdir(exist_ok=True)
-    number=f'{index:03d}'
+def export_pair(entry, index, destination, fmt, stem, outputs=None):
+    outputs=outputs or {'cen':True,'uncen':True,'main':True}
+    destination=Path(destination);number=f'{index:03d}'
     ext={'PNG':'png','WEBP':'webp','JPEG':'jpg'}[fmt]
-    processed=censored/(number+'.'+ext)
-    source=Path(entry['path']); unprocessed=original/(number+source.suffix)
-    main_output=None
+    created=[]
+    def target(kind,suffix):
+        folder=destination/(stem+'_'+kind);folder.mkdir(exist_ok=True)
+        path=folder/(number+suffix);created.append(path);return path
     try:
-        strip_metadata(source,unprocessed)
-        export_image(entry,processed,fmt)
-        if entry.get('main_selected',False):
-            import shutil
-            main_folder=destination/(stem+'_main');main_folder.mkdir(exist_ok=True)
-            main_output=main_folder/processed.name
-            shutil.copyfile(processed,main_output)
+        if outputs.get('uncen'):
+            strip_metadata(entry['path'],target('uncen',Path(entry['path']).suffix))
+        processed=None
+        if outputs.get('cen'):
+            processed=target('cen','.'+ext);export_image(entry,processed,fmt)
+        if outputs.get('main') and entry.get('main_selected',False):
+            main_output=target('main','.'+ext)
+            if processed is not None:
+                import shutil
+                shutil.copyfile(processed,main_output)
+            else:export_image(entry,main_output,fmt)
     except Exception:
-        # Do not leave a misleading partial pair if either side fails.
-        processed.unlink(missing_ok=True);unprocessed.unlink(missing_ok=True)
-        if main_output is not None:main_output.unlink(missing_ok=True)
+        for path in created:path.unlink(missing_ok=True)
         raise
+    return [str(path) for path in created]

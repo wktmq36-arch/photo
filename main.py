@@ -1,11 +1,11 @@
 import sys, json, uuid, copy, time
 from pathlib import Path
 from collections import OrderedDict
-from PySide6.QtCore import Qt, QSize, QRectF, Signal, QObject, QRunnable, QThreadPool, QTimer, QMimeData, QItemSelectionModel
+from PySide6.QtCore import Qt, QSize, QRectF, Signal, QObject, QRunnable, QThreadPool, QTimer, QMimeData, QItemSelectionModel, QSettings
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKeySequence, QFontDatabase, QFont, QShortcut, QDrag
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem,
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
-    QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox)
+    QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit)
 from imaging import EXTENSIONS, read_pixels, render_regions, export_image, export_pair
 
 def to_qimage(image):
@@ -219,7 +219,9 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.8'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.9'); self.resize(1400,900)
+        self.settings=QSettings('PhotoOrganizer','Photo')
+        self.export_folder=str(self.settings.value('export/folder',''))
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.dirty=False; self.project=None
         self.pool=QThreadPool(self); self.pool.setMaxThreadCount(4)
         self.preview_pool=QThreadPool(self); self.preview_pool.setMaxThreadCount(2)
@@ -229,8 +231,20 @@ class Window(QMainWindow):
         top=QHBoxLayout(); layout.addLayout(top)
         for label,fn in [('파일 추가',self.add_dialog),('폴더 추가',self.folder_dialog),('작업 열기',self.load_project),('작업 저장',self.save_project),('실행 취소',self.undo),('목록에서 제외',self.remove_selected)]:
             button=QPushButton(label); button.clicked.connect(fn); top.addWidget(button)
-        top.addStretch(); self.format=QComboBox(); self.format.addItems(['PNG','WEBP','JPEG']); top.addWidget(self.format)
-        self.export_button=QPushButton('순서대로 내보내기'); self.export_button.clicked.connect(self.export); top.addWidget(self.export_button)
+        top.addStretch()
+        export_controls=QHBoxLayout();layout.addLayout(export_controls)
+        folder_button=QPushButton('저장 위치 변경');folder_button.clicked.connect(self.choose_export_folder);export_controls.addWidget(folder_button)
+        self.export_folder_label=QLabel(self.export_folder or '저장 위치: 최초 내보내기 때 선택');self.export_folder_label.setToolTip(self.export_folder)
+        self.export_folder_label.setMaximumWidth(320);export_controls.addWidget(self.export_folder_label)
+        export_controls.addStretch();export_controls.addWidget(QLabel('폴더 이름'))
+        self.export_name=QLineEdit(str(self.settings.value('export/name','a')));self.export_name.setMaximumWidth(150);export_controls.addWidget(self.export_name)
+        self.output_checks={}
+        for key,label in [('cen','처리본'),('uncen','원본용'),('main','메인용')]:
+            check=QCheckBox(label);check.setChecked(self.settings.value('export/'+key,True,type=bool))
+            check.toggled.connect(lambda value,k=key:self.settings.setValue('export/'+k,value))
+            self.output_checks[key]=check;export_controls.addWidget(check)
+        self.format=QComboBox(); self.format.addItems(['PNG','WEBP','JPEG']); export_controls.addWidget(self.format)
+        self.export_button=QPushButton('순서대로 내보내기'); self.export_button.clicked.connect(self.export); export_controls.addWidget(self.export_button)
         self.splitter=QSplitter(Qt.Orientation.Horizontal); splitter=self.splitter
         splitter.setHandleWidth(14); splitter.setChildrenCollapsible(False)
         splitter.setStyleSheet('QSplitter::handle:horizontal {background:#687c94; border:4px solid #dfe5ed; border-radius:5px;} QSplitter::handle:horizontal:hover {background:#2788e8;}')
@@ -524,18 +538,30 @@ class Window(QMainWindow):
                         if not all(len(point)==2 and all(isinstance(v,(int,float)) and 0<=v<=1 for v in point) for point in r['points']):raise ValueError('잘못된 브러시 좌표')
             self.populate(entries); self.history=[]; self.project=path; self.dirty=False
         except Exception as exc:QMessageBox.warning(self,'열기 실패',str(exc))
+    def choose_export_folder(self):
+        folder=QFileDialog.getExistingDirectory(self,'결과를 저장할 상위 폴더',self.export_folder)
+        if not folder:return False
+        self.export_folder=folder;self.settings.setValue('export/folder',folder)
+        self.export_folder_label.setText(folder);self.export_folder_label.setToolTip(folder)
+        return True
     def export(self):
         if not self.entries or self.busy:return
-        folder=QFileDialog.getExistingDirectory(self,'결과를 저장할 상위 폴더')
-        if not folder:return
-        stem,accepted=QInputDialog.getText(self,'출력 폴더 이름','폴더 이름 (예: a → a/a_cen, a/a_uncen, a/a_main):',text='a')
-        if not accepted:return
+        outputs={key:check.isChecked() for key,check in self.output_checks.items()}
+        if not any(outputs.values()):
+            self.status.setText('내보낼 항목을 하나 이상 체크하세요.');return
+        if outputs['main'] and not outputs['cen'] and not outputs['uncen'] and not any(e.get('main_selected') for e in self.entries.values()):
+            self.status.setText('메인 게시용으로 체크한 그림이 없습니다.');return
+        if not self.export_folder or not Path(self.export_folder).is_dir():
+            if not self.choose_export_folder():return
+        folder=self.export_folder
+        stem=self.export_name.text()
         stem=stem.strip()
         if not stem or stem in {'.','..'} or any(c in stem for c in '<>:"/\\|?*') or stem.endswith('.'):
             QMessageBox.warning(self,'폴더 이름','사용할 수 없는 폴더 이름입니다.');return
         reserved={'CON','PRN','AUX','NUL'}|{f'COM{i}' for i in range(1,10)}|{f'LPT{i}' for i in range(1,10)}
         if stem.split('.')[0].upper() in reserved or any(ord(c)<32 for c in stem):
             QMessageBox.warning(self,'폴더 이름','사용할 수 없는 폴더 이름입니다.');return
+        self.settings.setValue('export/name',stem)
         destination=Path(folder)/stem
         try:destination.mkdir()
         except FileExistsError:
@@ -543,20 +569,25 @@ class Window(QMainWindow):
         except OSError as exc:
             QMessageBox.warning(self,'폴더 생성 실패',str(exc));return
         entries=copy.deepcopy(self.ordered()); fmt=self.format.currentText(); ext={'PNG':'png','WEBP':'webp','JPEG':'jpg'}[fmt]
-        self.busy=True; self.export_button.setEnabled(False); self.progress.setRange(0,len(entries)); self.progress.setValue(0); self.progress.show(); self.errors=[]; self.exported_main=0
-        self.export_next(entries,0,destination,fmt,ext,stem)
-    def export_next(self,entries,index,destination,fmt,ext,stem):
+        self.busy=True; self.export_button.setEnabled(False); self.progress.setRange(0,len(entries)); self.progress.setValue(0); self.progress.show(); self.errors=[]; self.exported_main=0;self.exported_files=0
+        self.export_next(entries,0,destination,fmt,ext,stem,outputs)
+    def export_next(self,entries,index,destination,fmt,ext,stem,outputs):
         if index==len(entries):
             self.busy=False; self.export_button.setEnabled(True); self.progress.hide()
-            message=f'{len(entries)-len(self.errors)}쌍 저장 완료\n{destination}\n{stem}_cen: 모자이크 처리본\n{stem}_uncen: 원본 압축 데이터 유지 · 메타데이터만 제거\n양쪽 모두 메타데이터 제거 검증 완료'
-            if self.exported_main:message+=f'\n{stem}_main: 메인 게시용 처리본 {self.exported_main}장'
+            message=f'{self.exported_files}개 파일 저장 완료\n{destination}'
+            if outputs['cen']:message+=f'\n{stem}_cen: 모자이크 처리본'
+            if outputs['uncen']:message+=f'\n{stem}_uncen: 원본용 · 메타데이터만 제거'
+            if self.exported_main:message+=f'\n{stem}_main: 메인 게시용 {self.exported_main}장'
+            message+='\n출력 파일 메타데이터 제거 검증 완료'
             if self.errors:message+='\n\n실패:\n'+'\n'.join(self.errors[:10])
             QMessageBox.information(self,'내보내기 결과',message); return
         def complete(result):
             if not result[0]:self.errors.append(Path(entries[index]['path']).name+': '+result[1])
-            elif entries[index].get('main_selected',False):self.exported_main+=1
-            self.progress.setValue(index+1); self.export_next(entries,index+1,destination,fmt,ext,stem)
-        self.run_job(self.export_pool,lambda:export_pair(entries[index],index+1,destination,fmt,stem),complete)
+            else:
+                self.exported_files+=len(result[1])
+                if outputs['main'] and entries[index].get('main_selected',False):self.exported_main+=1
+            self.progress.setValue(index+1); self.export_next(entries,index+1,destination,fmt,ext,stem,outputs)
+        self.run_job(self.export_pool,lambda:export_pair(entries[index],index+1,destination,fmt,stem,outputs),complete)
     def closeEvent(self,event):
         if self.busy:QMessageBox.information(self,'내보내기 중','내보내기가 끝난 후 종료하세요.'); event.ignore(); return
         if not self.confirm_discard():event.ignore(); return

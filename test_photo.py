@@ -6,6 +6,13 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def setUp(self):
+  from unittest.mock import patch
+  from PySide6.QtCore import QSettings
+  self.settings_folder=tempfile.TemporaryDirectory();self.addCleanup(self.settings_folder.cleanup)
+  settings=QSettings(str(Path(self.settings_folder.name)/'settings.ini'),QSettings.Format.IniFormat)
+  mock=patch('main.QSettings',return_value=settings);mock.start();self.addCleanup(mock.stop)
+
  def test_export(self):
   with tempfile.TemporaryDirectory() as d:
    p=Path(d)/'source.webp'; im=Image.effect_noise((800,600),100).convert('RGB'); ex=Image.Exif(); ex[270]='secret prompt'; im.save(p,'WEBP',exif=ex,xmp=b'secret prompt')
@@ -325,4 +332,35 @@ class Tests(unittest.TestCase):
    deadline=time.monotonic()+10
    while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
    w.dirty=False;w.close()
+ def test_output_choices_and_remembered_folder(self):
+  from imaging import export_pair
+  from unittest.mock import patch
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d);source=root/'source.webp';Image.new('RGB',(80,60),'red').save(source)
+   entry={'path':str(source),'regions':[],'main_selected':True}
+   for mask in range(1,8):
+    dest=root/f'combination{mask}';dest.mkdir()
+    choices={key:bool(mask&(1<<i)) for i,key in enumerate(['cen','uncen','main'])}
+    files=export_pair(entry,5,dest,'PNG','a',choices)
+    self.assertEqual({p.name for p in dest.iterdir()},{'a_'+k for k,v in choices.items() if v})
+    self.assertEqual(len(files),sum(choices.values()))
+   w=Window();w.add_paths([str(source)])
+   w.output_checks['cen'].setChecked(False);w.output_checks['main'].setChecked(False)
+   w.export_name.setText('first')
+   with patch('main.QFileDialog.getExistingDirectory',return_value=d) as picker,patch('main.QMessageBox.information'):
+    w.export();deadline=time.monotonic()+10
+    while w.busy or w.jobs:app.processEvents();time.sleep(.001)
+    picker.assert_called_once()
+    w.export_name.setText('second');w.export()
+    while w.busy or w.jobs:app.processEvents();time.sleep(.001)
+    picker.assert_called_once()
+   self.assertEqual([p.name for p in (root/'second').iterdir()],['second_uncen'])
+   w.dirty=False;w.close()
+   next_window=Window()
+   self.assertEqual(next_window.export_folder,d)
+   self.assertFalse(next_window.output_checks['cen'].isChecked())
+   self.assertTrue(next_window.output_checks['uncen'].isChecked())
+   self.assertEqual(next_window.export_name.text(),'second')
+   next_window.close()
 if __name__=='__main__':unittest.main()
