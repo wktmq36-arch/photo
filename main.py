@@ -6,7 +6,7 @@ from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKey
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem,
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
     QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog)
-from imaging import EXTENSIONS, read_pixels, render_regions, export_image
+from imaging import EXTENSIONS, read_pixels, render_regions, export_image, export_pair
 
 def to_qimage(image):
     rgba = image.convert('RGBA')
@@ -214,7 +214,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.5'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.6'); self.resize(1400,900)
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.dirty=False; self.project=None
         self.pool=QThreadPool(self); self.pool.setMaxThreadCount(4)
         self.preview_pool=QThreadPool(self); self.preview_pool.setMaxThreadCount(2)
@@ -505,20 +505,25 @@ class Window(QMainWindow):
         if not self.entries or self.busy:return
         folder=QFileDialog.getExistingDirectory(self,'결과를 저장할 상위 폴더')
         if not folder:return
+        stem,accepted=QInputDialog.getText(self,'출력 폴더 이름','공통 이름 (예: a → a_cen / a_uncen):',text='a')
+        if not accepted:return
+        stem=stem.strip()
+        if not stem or stem in {'.','..'} or any(c in stem for c in '<>:"/\\|?*') or stem.endswith('.'):
+            QMessageBox.warning(self,'폴더 이름','사용할 수 없는 폴더 이름입니다.');return
         destination=Path(folder)/('Photo_'+time.strftime('%Y%m%d_%H%M%S')+'_'+uuid.uuid4().hex[:6]); destination.mkdir()
         entries=copy.deepcopy(self.ordered()); fmt=self.format.currentText(); ext={'PNG':'png','WEBP':'webp','JPEG':'jpg'}[fmt]
         self.busy=True; self.export_button.setEnabled(False); self.progress.setRange(0,len(entries)); self.progress.setValue(0); self.progress.show(); self.errors=[]
-        self.export_next(entries,0,destination,fmt,ext)
-    def export_next(self,entries,index,destination,fmt,ext):
+        self.export_next(entries,0,destination,fmt,ext,stem)
+    def export_next(self,entries,index,destination,fmt,ext,stem):
         if index==len(entries):
             self.busy=False; self.export_button.setEnabled(True); self.progress.hide()
-            message=f'{len(entries)-len(self.errors)}장 저장 완료\n{destination}\nEXIF·XMP·생성 정보 제거 후 검증 완료'
+            message=f'{len(entries)-len(self.errors)}쌍 저장 완료\n{destination}\n{stem}_cen: 모자이크 처리본\n{stem}_uncen: 원본 압축 데이터 유지 · 메타데이터만 제거\n양쪽 모두 메타데이터 제거 검증 완료'
             if self.errors:message+='\n\n실패:\n'+'\n'.join(self.errors[:10])
             QMessageBox.information(self,'내보내기 결과',message); return
         def complete(result):
             if not result[0]:self.errors.append(Path(entries[index]['path']).name+': '+result[1])
-            self.progress.setValue(index+1); self.export_next(entries,index+1,destination,fmt,ext)
-        self.run_job(self.export_pool,lambda:export_image(entries[index],destination/f'{index+1:03d}.{ext}',fmt),complete)
+            self.progress.setValue(index+1); self.export_next(entries,index+1,destination,fmt,ext,stem)
+        self.run_job(self.export_pool,lambda:export_pair(entries[index],index+1,destination,fmt,stem),complete)
     def closeEvent(self,event):
         if self.busy:QMessageBox.information(self,'내보내기 중','내보내기가 끝난 후 종료하세요.'); event.ignore(); return
         if not self.confirm_discard():event.ignore(); return

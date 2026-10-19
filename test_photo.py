@@ -248,4 +248,51 @@ class Tests(unittest.TestCase):
    w.undo();self.assertEqual(w.list.count(),2)
    while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
    w.dirty=False;w.close()
+ def test_metadata_only_preserves_compressed_pixels(self):
+  from imaging import strip_metadata,export_pair
+  from PIL.PngImagePlugin import PngInfo
+  import struct
+  with tempfile.TemporaryDirectory() as d:
+   d=Path(d);image=Image.effect_noise((240,200),100).convert('RGB')
+   exif=Image.Exif();exif[270]='secret prompt'
+   def webp_image_chunks(data):
+    offset=12;chunks=[]
+    while offset<len(data):
+     size=struct.unpack('<I',data[offset+4:offset+8])[0];kind=data[offset:offset+4]
+     if kind in [b'VP8 ',b'VP8L',b'ALPH',b'ANIM',b'ANMF']:chunks.append(data[offset:offset+8+size])
+     offset+=8+size+(size%2)
+    return chunks
+   for fmt,ext in [('WEBP','webp'),('PNG','png'),('JPEG','jpg')]:
+    source=d/('source.'+ext)
+    if fmt=='WEBP':image.save(source,fmt,quality=75,exif=exif,xmp=b'secret prompt')
+    elif fmt=='PNG':
+     info=PngInfo();info.add_text('parameters','secret prompt');image.save(source,fmt,pnginfo=info,exif=exif)
+    else:image.save(source,fmt,exif=exif,progressive=True)
+    before=source.read_bytes();out=d/('clean.'+ext);strip_metadata(source,out)
+    self.assertEqual(source.read_bytes(),before)
+    self.assertNotIn(b'secret',out.read_bytes())
+    with Image.open(source) as a,Image.open(out) as b:
+     self.assertEqual(a.convert('RGBA').tobytes(),b.convert('RGBA').tobytes());self.assertFalse(b.getexif())
+    if fmt=='WEBP':self.assertEqual(webp_image_chunks(before),webp_image_chunks(out.read_bytes()))
+   source=d/'source.webp';entry={'path':str(source),'regions':[{'rect':[.1,.1,.9,.9],'strength':50}]}
+   export_pair(entry,2,d,'PNG','a')
+   self.assertTrue((d/'a_cen/002.png').exists());self.assertTrue((d/'a_uncen/002.webp').exists())
+   self.assertEqual(webp_image_chunks(source.read_bytes()),webp_image_chunks((d/'a_uncen/002.webp').read_bytes()))
+ def test_export_ui_creates_ordered_folder_pairs(self):
+  from unittest.mock import patch
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths=[]
+   for i,color in enumerate(['red','blue']):
+    path=Path(d)/f'{i}.webp';Image.new('RGB',(80,60),color).save(path,lossless=True);paths.append(str(path))
+   w=Window();w.add_paths(paths);w.list.move_ids([w.ordered()[1]['id']],0)
+   with patch('main.QFileDialog.getExistingDirectory',return_value=d),patch('main.QInputDialog.getText',return_value=('a',True)),patch('main.QMessageBox.information'):
+    w.export();deadline=time.monotonic()+15
+    while (w.busy or w.jobs) and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+    self.assertFalse(w.busy);self.assertFalse(w.errors)
+   output=next(Path(d).glob('Photo_*'))
+   for folder,ext in [('a_cen','png'),('a_uncen','webp')]:
+    self.assertEqual(len(list((output/folder).iterdir())),2)
+    with Image.open(output/folder/('001.'+ext)) as im:self.assertEqual(im.getpixel((0,0))[:3],(0,0,255))
+   w.dirty=False;w.close()
 if __name__=='__main__':unittest.main()
