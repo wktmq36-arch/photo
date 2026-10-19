@@ -38,6 +38,22 @@ class ImageList(QListWidget):
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setSpacing(5); self.setAcceptDrops(True)
+        self.setSelectionRectVisible(False)
+        self.empty_press=False
+    def mousePressEvent(self,event):
+        self.empty_press=not self.indexAt(event.position().toPoint()).isValid()
+        if self.empty_press:
+            if not event.modifiers():self.clearSelection()
+            event.accept(); return
+        super().mousePressEvent(event)
+    def mouseMoveEvent(self,event):
+        if self.empty_press:
+            event.accept(); return
+        super().mouseMoveEvent(event)
+    def mouseReleaseEvent(self,event):
+        if self.empty_press:
+            self.empty_press=False; event.accept(); return
+        super().mouseReleaseEvent(event)
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls(): event.acceptProposedAction()
         else: super().dragEnterEvent(event)
@@ -63,6 +79,7 @@ class Canvas(QWidget):
     def __init__(self):
         super().__init__(); self.setMinimumSize(320, 300)
         self.pixmap = None; self.regions = []; self.active = -1; self.start = None; self.end = None
+        self.tool='box'; self.brush_radius=.025; self.stroke=[]; self.drawing_brush=False
         self.zoom = 1.0; self.target = QRectF()
     def normalized(self, point):
         return (max(0., min(1., (point.x()-self.target.x())/max(1,self.target.width()))),
@@ -76,17 +93,26 @@ class Canvas(QWidget):
         self.target = QRectF((self.width()-w)/2,(self.height()-h)/2,w,h)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         p.drawPixmap(self.target, self.pixmap, QRectF(self.pixmap.rect()))
-        for i,r in enumerate(self.regions):
-            a,b,c,d = r['rect']; p.setPen(QPen(QColor('#ffcf66' if i==self.active else '#69b5ff'),2))
-            p.drawRect(QRectF(self.target.x()+a*w,self.target.y()+b*h,(c-a)*w,(d-b)*h))
         if self.start is not None and self.end is not None:
             p.setPen(QPen(QColor('#ffffff'),2,Qt.PenStyle.DashLine)); p.drawRect(QRectF(self.start,self.end).normalized())
     def mousePressEvent(self,event):
         if self.pixmap and event.button()==Qt.MouseButton.LeftButton and self.target.contains(event.position()):
-            self.start=event.position(); self.end=self.start
+            if self.tool=='brush':
+                self.drawing_brush=True; self.stroke=[self.normalized(event.position())]
+                self.selected.emit(('brush_start',{'points':self.stroke.copy(),'radius':self.brush_radius}))
+            else:
+                self.start=event.position(); self.end=self.start
     def mouseMoveEvent(self,event):
+        if self.drawing_brush:
+            self.stroke.append(self.normalized(event.position()))
+            self.selected.emit(('brush_move',self.stroke.copy()))
+            return
         if self.start is not None: self.end=event.position(); self.update()
     def mouseReleaseEvent(self,event):
+        if self.drawing_brush:
+            self.stroke.append(self.normalized(event.position()))
+            self.selected.emit(('brush_move',self.stroke.copy()))
+            self.drawing_brush=False; return
         if self.start is None: return
         a,b=self.normalized(self.start); c,d=self.normalized(event.position())
         if abs(event.position().x()-self.start.x())>5 and abs(event.position().y()-self.start.y())>5:
@@ -116,13 +142,23 @@ class Window(QMainWindow):
         right=QWidget(); rl=QVBoxLayout(right)
         self.title=QLabel('그림을 선택하세요'); rl.addWidget(self.title)
         self.canvas=Canvas(); rl.addWidget(self.canvas,1)
+        brush_tools=QHBoxLayout(); rl.addLayout(brush_tools)
+        brush_tools.addWidget(QLabel('도구'))
+        self.tool=QComboBox(); self.tool.addItems(['박스','브러시']); brush_tools.addWidget(self.tool)
+        self.tool.currentIndexChanged.connect(lambda index:setattr(self.canvas,'tool','brush' if index else 'box'))
+        brush_tools.addWidget(QLabel('브러시 크기'))
+        self.brush_size=QSlider(Qt.Orientation.Horizontal); self.brush_size.setRange(5,200); self.brush_size.setValue(50)
+        self.brush_size.valueChanged.connect(lambda value:setattr(self.canvas,'brush_radius',value/2000))
+        brush_tools.addWidget(self.brush_size)
+        self.brush_value=QLabel('50'); brush_tools.addWidget(self.brush_value)
+        self.brush_size.valueChanged.connect(lambda value:self.brush_value.setText(str(value)))
         tools=QHBoxLayout(); rl.addLayout(tools)
         tools.addWidget(QLabel('모자이크 강도'))
         self.strength=QSlider(Qt.Orientation.Horizontal); self.strength.setTracking(True); self.strength.setRange(2,100); self.strength.setValue(20); tools.addWidget(self.strength)
         self.value=QLabel('20'); tools.addWidget(self.value)
         delete_region=QPushButton('선택 영역 삭제'); tools.addWidget(delete_region); delete_region.clicked.connect(self.remove_region)
         self.original=QPushButton('원본 비교'); self.original.setCheckable(True); tools.addWidget(self.original); self.original.toggled.connect(self.render)
-        rl.addWidget(QLabel('드래그: 모자이크 추가 · 영역 클릭: 강도 변경 · ← / →: 이전 / 다음 그림'))
+        rl.addWidget(QLabel('박스: 드래그 / 영역 클릭 · 브러시: 문지르기 · Ctrl+Z: 취소 · ← / →: 이전 / 다음 그림'))
         splitter.addWidget(right); splitter.setSizes([580,820])
         self.progress=QProgressBar(); self.progress.hide(); layout.addWidget(self.progress)
         self.status=QLabel('원본을 보존하며, 결과 파일에는 메타데이터를 저장하지 않습니다.'); layout.addWidget(self.status)
@@ -268,13 +304,27 @@ class Window(QMainWindow):
     def region_event(self,event):
         entry=self.current()
         if not entry or self.original.isChecked():return
-        if event[0]=='add':
+        if event[0]=='brush_start':
+            self.snapshot()
+            region={'kind':'brush','points':event[1]['points'],'radius':event[1]['radius'],'strength':self.strength.value()}
+            self.brush_bounds(region); entry['regions'].append(region); self.canvas.active=len(entry['regions'])-1
+        elif event[0]=='brush_move':
+            if not 0<=self.canvas.active<len(entry['regions']):return
+            region=entry['regions'][self.canvas.active]
+            region['points']=event[1]; self.brush_bounds(region)
+        elif event[0]=='add':
             self.snapshot(); entry['regions'].append({'rect':event[1],'strength':self.strength.value()}); self.canvas.active=len(entry['regions'])-1
         else:
             self.canvas.active=event[1]
             if event[1]>=0:
                 self.strength.blockSignals(True); self.strength.setValue(entry['regions'][event[1]]['strength']); self.strength.blockSignals(False); self.value.setText(str(self.strength.value()))
         self.render(); self.renumber()
+    def brush_bounds(self,region):
+        image=self.cache.get(self.current()['path'])
+        aspect=image.width/image.height if image else 1
+        radius=region['radius']; points=region['points']
+        region['rect']=[max(0,min(p[0] for p in points)-radius),max(0,min(p[1] for p in points)-radius*aspect),
+                        min(1,max(p[0] for p in points)+radius),min(1,max(p[1] for p in points)+radius*aspect)]
     def begin_strength_change(self):
         entry=self.current()
         if entry and 0<=self.canvas.active<len(entry['regions']):self.snapshot()
@@ -307,6 +357,9 @@ class Window(QMainWindow):
                 if not isinstance(e['path'],str) or not isinstance(e['regions'],list):raise ValueError('잘못된 작업 파일')
                 for r in e['regions']:
                     if len(r['rect'])!=4 or not all(isinstance(v,(int,float)) and 0<=v<=1 for v in r['rect']) or not 2<=r['strength']<=100:raise ValueError('잘못된 모자이크 영역')
+                    if r.get('kind')=='brush':
+                        if not isinstance(r.get('points'),list) or not r['points'] or not 0<r.get('radius',0)<=.1:raise ValueError('잘못된 브러시 영역')
+                        if not all(len(point)==2 and all(isinstance(v,(int,float)) and 0<=v<=1 for v in point) for point in r['points']):raise ValueError('잘못된 브러시 좌표')
             self.populate(entries); self.history=[]; self.project=path; self.dirty=False
         except Exception as exc:QMessageBox.warning(self,'열기 실패',str(exc))
     def export(self):

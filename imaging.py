@@ -1,4 +1,4 @@
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageDraw
 from pathlib import Path
 import math
 
@@ -24,7 +24,16 @@ def render_regions(image, regions):
         crop = result.crop(box)
         block = max(2, round(region['strength'] * width / 1000))
         small = crop.resize((max(1, crop.width // block), max(1, crop.height // block)), Image.Resampling.BOX)
-        result.paste(small.resize(crop.size, Image.Resampling.NEAREST), box)
+        mosaic = small.resize(crop.size, Image.Resampling.NEAREST)
+        mask = None
+        if region.get('kind') == 'brush':
+            mask = Image.new('L', crop.size, 0)
+            draw = ImageDraw.Draw(mask)
+            radius = region['radius'] * width
+            points = [(x*width-box[0], y*height-box[1]) for x,y in region['points']]
+            if len(points)>1: draw.line(points, fill=255, width=max(1,round(radius*2)))
+            for x,y in points: draw.ellipse((x-radius,y-radius,x+radius,y+radius),fill=255)
+        result.paste(mosaic, box, mask)
     return result
 
 def export_image(entry, destination, fmt):

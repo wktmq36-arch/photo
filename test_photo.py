@@ -54,4 +54,23 @@ class Tests(unittest.TestCase):
    self.assertFalse(w.current()['regions'])
    self.assertEqual(w.list.currentRow(),1)
    w.dirty=False; w.close()
+ def test_brush_mask(self):
+  from imaging import read_pixels,render_regions
+  image=Image.effect_noise((400,400),100).convert('RGBA')
+  region={'kind':'brush','rect':[.15,.15,.85,.85],'points':[[.2,.2],[.8,.8]],'radius':.05,'strength':70}
+  result=render_regions(image,[region])
+  self.assertEqual(result.getpixel((80,320)),image.getpixel((80,320)))
+  self.assertNotEqual(result.crop((180,180,220,220)).tobytes(),image.crop((180,180,220,220)).tobytes())
+ def test_brush_stroke_undo(self):
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   p=Path(d)/'brush.webp'; Image.effect_noise((400,400),100).convert('RGB').save(p)
+   w=Window(); w.add_paths([str(p)]); deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents(); time.sleep(.001)
+   w.tool.setCurrentIndex(1); self.assertEqual(w.canvas.tool,'brush')
+   w.region_event(('brush_start',{'points':[[.2,.2]],'radius':.05}))
+   w.region_event(('brush_move',[[.2,.2],[.8,.8]]))
+   self.assertEqual(len(w.current()['regions']),1)
+   w.undo(); self.assertFalse(w.current()['regions'])
+   w.dirty=False; w.close()
 if __name__=='__main__':unittest.main()
