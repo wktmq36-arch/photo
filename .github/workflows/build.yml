@@ -14,6 +14,12 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python -m unittest -v test_photo
       - run: python -m PyInstaller --noconfirm --windowed --onedir --name Photo main.py
+      - name: Test packaged EXE
+        shell: pwsh
+        run: |
+          $process = Start-Process dist/Photo/Photo.exe -ArgumentList '--smoke-test' -PassThru
+          if (-not $process.WaitForExit(30000)) { Stop-Process -Id $process.Id; throw 'EXE startup timeout' }
+          if ($process.ExitCode -ne 0) { throw 'EXE startup failed' }
       - uses: actions/upload-artifact@v4
         with:
           name: Photo-Windows
