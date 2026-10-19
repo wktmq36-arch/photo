@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt, QSize, QRectF, Signal, QObject, QRunnable, QThrea
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKeySequence, QFontDatabase, QFont, QShortcut, QDrag
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem,
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
-    QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog)
+    QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox)
 from imaging import EXTENSIONS, read_pixels, render_regions, export_image, export_pair
 
 def to_qimage(image):
@@ -25,16 +25,21 @@ class Job(QRunnable):
         self.signals.done.emit(result)
 
 MOSAIC_ROLE = int(Qt.ItemDataRole.UserRole) + 1
+MAIN_ROLE = int(Qt.ItemDataRole.UserRole) + 2
 
 class ThumbnailDelegate(QStyledItemDelegate):
     def paint(self,painter,option,index):
         super().paint(painter,option,index)
-        if not index.data(MOSAIC_ROLE):return
+        if not index.data(MOSAIC_ROLE) and not index.data(MAIN_ROLE):return
         painter.save()
         font=painter.font(); font.setPixelSize(11); font.setBold(True); painter.setFont(font)
-        badge=QRectF(option.rect.right()-68,option.rect.top()+5,64,23)
-        painter.setPen(Qt.PenStyle.NoPen); painter.setBrush(QColor('#137c59')); painter.drawRoundedRect(badge,5,5)
-        painter.setPen(QColor('white')); painter.drawText(badge,Qt.AlignmentFlag.AlignCenter,'모자이크')
+        badges=[]
+        if index.data(MOSAIC_ROLE):badges.append(('모자이크','#137c59'))
+        if index.data(MAIN_ROLE):badges.append(('메인','#7446b8'))
+        for offset,(label,color) in enumerate(badges):
+            badge=QRectF(option.rect.right()-68,option.rect.top()+5+offset*26,64,23)
+            painter.setPen(Qt.PenStyle.NoPen); painter.setBrush(QColor(color)); painter.drawRoundedRect(badge,5,5)
+            painter.setPen(QColor('white')); painter.drawText(badge,Qt.AlignmentFlag.AlignCenter,label)
         painter.restore()
 
 class ImageList(QListWidget):
@@ -214,7 +219,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.6'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.7'); self.resize(1400,900)
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.dirty=False; self.project=None
         self.pool=QThreadPool(self); self.pool.setMaxThreadCount(4)
         self.preview_pool=QThreadPool(self); self.preview_pool.setMaxThreadCount(2)
@@ -236,6 +241,9 @@ class Window(QMainWindow):
         right=QWidget(); right.setMinimumWidth(460); rl=QVBoxLayout(right)
         rl.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         self.title=QLabel('그림을 선택하세요'); rl.addWidget(self.title)
+        self.main_check=QCheckBox('메인 게시용으로 선택 · 별도 폴더에도 저장')
+        self.main_check.setEnabled(False); self.main_check.toggled.connect(self.toggle_main)
+        rl.addWidget(self.main_check)
         self.canvas=Canvas(); rl.addWidget(self.canvas,1)
         brush_tools=QHBoxLayout(); rl.addLayout(brush_tools)
         brush_tools.addWidget(QLabel('도구'))
@@ -316,6 +324,7 @@ class Window(QMainWindow):
         if self.list.count(): self.list.setCurrentRow(0)
         else: self.canvas.pixmap=None; self.canvas.update()
     def insert_entry(self,entry):
+        entry.setdefault('main_selected',False)
         self.entries[entry['id']]=entry
         item=QListWidgetItem(Path(entry['path']).name); item.setData(Qt.ItemDataRole.UserRole,entry['id']); item.setToolTip(entry['path']); self.list.addItem(item)
         path=entry['path']
@@ -352,8 +361,9 @@ class Window(QMainWindow):
             item=self.list.item(i); entry=self.entries[item.data(Qt.ItemDataRole.UserRole)]
             item.setText(f'{i+1:03d}  '+Path(entry['path']).name)
             item.setData(MOSAIC_ROLE,bool(entry['regions']))
+            item.setData(MAIN_ROLE,bool(entry.get('main_selected',False)))
             item.setToolTip(entry['path']+(f'\n모자이크 적용 · {len(entry["regions"])}개 영역' if entry['regions'] else '\n모자이크 없음'))
-        self.status.setText(f'총 {self.list.count()}장 · 모자이크 {sum(bool(e["regions"]) for e in self.entries.values())}장')
+        self.status.setText(f'총 {self.list.count()}장 · 모자이크 {sum(bool(e["regions"]) for e in self.entries.values())}장 · 메인 {sum(bool(e.get("main_selected")) for e in self.entries.values())}장')
     def order_changed(self):self.dirty=True; self.renumber()
     def remove_selected(self):
         rows=sorted(self.list.row(item) for item in self.list.selectedItems())
@@ -376,7 +386,18 @@ class Window(QMainWindow):
         self.list.blockSignals(False)
         self.renumber(); self.selection_changed()
     def navigate(self,step):self.list.setCurrentRow(max(0,min(self.list.count()-1,self.list.currentRow()+step)))
+    def sync_main_check(self):
+        entry=self.current()
+        self.main_check.blockSignals(True)
+        self.main_check.setEnabled(entry is not None)
+        self.main_check.setChecked(bool(entry and entry.get('main_selected',False)))
+        self.main_check.blockSignals(False)
+    def toggle_main(self,checked):
+        entry=self.current()
+        if not entry or bool(entry.get('main_selected',False))==checked:return
+        self.snapshot();entry['main_selected']=checked;self.renumber()
     def selection_changed(self,*args):
+        self.sync_main_check()
         self.canvas.active=-1; self.original.setChecked(False)
         entry=self.current()
         self.canvas.pixmap=None; self.canvas.regions=[]; self.canvas.update()
@@ -409,6 +430,7 @@ class Window(QMainWindow):
             if result[0]:self.render()
             else:self.title.setText('읽기 실패: '+result[1])
     def render(self,*args):
+        self.sync_main_check()
         entry=self.current()
         if not entry or entry['path'] not in self.cache:return
         image=self.cache[entry['path']]
@@ -493,6 +515,7 @@ class Window(QMainWindow):
             data=json.loads(Path(path).read_text(encoding='utf-8')); entries=data['images']
             if data.get('version')!=1:raise ValueError('지원하지 않는 작업 파일입니다.')
             for e in entries:
+                if not isinstance(e.get('main_selected',False),bool):raise ValueError('잘못된 메인 선택 상태')
                 if not isinstance(e['path'],str) or not isinstance(e['regions'],list):raise ValueError('잘못된 작업 파일')
                 for r in e['regions']:
                     if len(r['rect'])!=4 or not all(isinstance(v,(int,float)) and 0<=v<=1 for v in r['rect']) or not 2<=r['strength']<=100:raise ValueError('잘못된 모자이크 영역')
@@ -512,16 +535,18 @@ class Window(QMainWindow):
             QMessageBox.warning(self,'폴더 이름','사용할 수 없는 폴더 이름입니다.');return
         destination=Path(folder)/('Photo_'+time.strftime('%Y%m%d_%H%M%S')+'_'+uuid.uuid4().hex[:6]); destination.mkdir()
         entries=copy.deepcopy(self.ordered()); fmt=self.format.currentText(); ext={'PNG':'png','WEBP':'webp','JPEG':'jpg'}[fmt]
-        self.busy=True; self.export_button.setEnabled(False); self.progress.setRange(0,len(entries)); self.progress.setValue(0); self.progress.show(); self.errors=[]
+        self.busy=True; self.export_button.setEnabled(False); self.progress.setRange(0,len(entries)); self.progress.setValue(0); self.progress.show(); self.errors=[]; self.exported_main=0
         self.export_next(entries,0,destination,fmt,ext,stem)
     def export_next(self,entries,index,destination,fmt,ext,stem):
         if index==len(entries):
             self.busy=False; self.export_button.setEnabled(True); self.progress.hide()
             message=f'{len(entries)-len(self.errors)}쌍 저장 완료\n{destination}\n{stem}_cen: 모자이크 처리본\n{stem}_uncen: 원본 압축 데이터 유지 · 메타데이터만 제거\n양쪽 모두 메타데이터 제거 검증 완료'
+            if self.exported_main:message+=f'\n{stem}_main: 메인 게시용 처리본 {self.exported_main}장'
             if self.errors:message+='\n\n실패:\n'+'\n'.join(self.errors[:10])
             QMessageBox.information(self,'내보내기 결과',message); return
         def complete(result):
             if not result[0]:self.errors.append(Path(entries[index]['path']).name+': '+result[1])
+            elif entries[index].get('main_selected',False):self.exported_main+=1
             self.progress.setValue(index+1); self.export_next(entries,index+1,destination,fmt,ext,stem)
         self.run_job(self.export_pool,lambda:export_pair(entries[index],index+1,destination,fmt,stem),complete)
     def closeEvent(self,event):

@@ -285,14 +285,38 @@ class Tests(unittest.TestCase):
    paths=[]
    for i,color in enumerate(['red','blue']):
     path=Path(d)/f'{i}.webp';Image.new('RGB',(80,60),color).save(path,lossless=True);paths.append(str(path))
-   w=Window();w.add_paths(paths);w.list.move_ids([w.ordered()[1]['id']],0)
+   w=Window();w.add_paths(paths);w.main_check.setChecked(True);w.list.move_ids([w.ordered()[1]['id']],0)
    with patch('main.QFileDialog.getExistingDirectory',return_value=d),patch('main.QInputDialog.getText',return_value=('a',True)),patch('main.QMessageBox.information'):
     w.export();deadline=time.monotonic()+15
     while (w.busy or w.jobs) and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
     self.assertFalse(w.busy);self.assertFalse(w.errors)
    output=next(Path(d).glob('Photo_*'))
+   self.assertEqual([p.name for p in (output/'a_main').iterdir()],['002.png'])
+   self.assertEqual((output/'a_main/002.png').read_bytes(),(output/'a_cen/002.png').read_bytes())
+   with Image.open(output/'a_main/002.png') as main_image:self.assertFalse(main_image.getexif())
    for folder,ext in [('a_cen','png'),('a_uncen','webp')]:
     self.assertEqual(len(list((output/folder).iterdir())),2)
     with Image.open(output/folder/('001.'+ext)) as im:self.assertEqual(im.getpixel((0,0))[:3],(0,0,255))
+   w.dirty=False;w.close()
+ def test_main_checkbox_persists_and_undoes(self):
+  from unittest.mock import patch
+  from main import MAIN_ROLE
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths=[]
+   for i in range(2):
+    p=Path(d)/f'{i}.png';Image.new('RGB',(80,60),'red').save(p);paths.append(str(p))
+   w=Window();self.assertFalse(w.main_check.isEnabled());w.add_paths(paths)
+   w.main_check.setChecked(True);self.assertTrue(w.ordered()[0]['main_selected'])
+   self.assertTrue(w.list.item(0).data(MAIN_ROLE));w.undo();self.assertFalse(w.main_check.isChecked())
+   w.main_check.setChecked(True);w.list.setCurrentRow(1);self.assertFalse(w.main_check.isChecked())
+   w.list.setCurrentRow(0);self.assertTrue(w.main_check.isChecked())
+   project=str(Path(d)/'main.photo.json')
+   with patch('main.QFileDialog.getSaveFileName',return_value=(project,'')):w.save_project()
+   w.main_check.setChecked(False);w.dirty=False
+   with patch('main.QFileDialog.getOpenFileName',return_value=(project,'')):w.load_project()
+   self.assertTrue(w.main_check.isChecked());self.assertFalse(w.ordered()[1]['main_selected'])
+   deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
    w.dirty=False;w.close()
 if __name__=='__main__':unittest.main()

@@ -133,10 +133,17 @@ def export_pair(entry, index, destination, fmt, stem):
     ext={'PNG':'png','WEBP':'webp','JPEG':'jpg'}[fmt]
     processed=censored/(number+'.'+ext)
     source=Path(entry['path']); unprocessed=original/(number+source.suffix)
+    main_output=None
     try:
         strip_metadata(source,unprocessed)
         export_image(entry,processed,fmt)
+        if entry.get('main_selected',False):
+            import shutil
+            main_folder=destination/(stem+'_main');main_folder.mkdir(exist_ok=True)
+            main_output=main_folder/processed.name
+            shutil.copyfile(processed,main_output)
     except Exception:
         # Do not leave a misleading partial pair if either side fails.
         processed.unlink(missing_ok=True);unprocessed.unlink(missing_ok=True)
+        if main_output is not None:main_output.unlink(missing_ok=True)
         raise
