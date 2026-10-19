@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt, QSize, QRectF, Signal, QObject, QRunnable, QThrea
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKeySequence, QFontDatabase, QFont, QShortcut, QDrag
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem,
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
-    QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout)
+    QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog)
 from imaging import EXTENSIONS, read_pixels, render_regions, export_image
 
 def to_qimage(image):
@@ -214,7 +214,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.3'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.4'); self.resize(1400,900)
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.dirty=False; self.project=None
         self.pool=QThreadPool(self); self.pool.setMaxThreadCount(4)
         self.preview_pool=QThreadPool(self); self.preview_pool.setMaxThreadCount(2)
@@ -253,6 +253,10 @@ class Window(QMainWindow):
         self.value=QLabel('20'); tools.addWidget(self.value)
         delete_region=QPushButton('선택 영역 삭제'); tools.addWidget(delete_region); delete_region.clicked.connect(self.remove_region)
         self.original=QPushButton('원본 비교'); self.original.setCheckable(True); tools.addWidget(self.original); self.original.toggled.connect(self.render)
+        batch_tools=QHBoxLayout(); rl.addLayout(batch_tools)
+        self.batch_strength_button=QPushButton('선택 사진 강도 일괄 변경')
+        self.batch_strength_button.clicked.connect(self.batch_strength_dialog); batch_tools.addWidget(self.batch_strength_button)
+        batch_tools.addWidget(QLabel('Ctrl/Shift로 여러 장 선택 · Ctrl+A로 전체 선택')); batch_tools.addStretch()
         rl.addWidget(QLabel('박스: 드래그 / 영역 클릭 · 브러시: 문지르기 · Ctrl+Z: 취소 · ← / →: 이전 / 다음 그림'))
         splitter.addWidget(right); splitter.setSizes([580,820])
         splitter.handle(1).setCursor(Qt.CursorShape.SizeHorCursor)
@@ -432,6 +436,31 @@ class Window(QMainWindow):
     def strength_changed(self,value):
         self.value.setText(str(value)); entry=self.current(); i=self.canvas.active
         if entry and 0<=i<len(entry['regions']):entry['regions'][i]['strength']=value; self.dirty=True; self.render()
+    def batch_strength_dialog(self):
+        ids=[item.data(Qt.ItemDataRole.UserRole) for item in self.list.selectedItems()]
+        entries=[self.entries[eid] for eid in ids if self.entries[eid]['regions']]
+        count=sum(len(entry['regions']) for entry in entries)
+        if not count:
+            self.status.setText('모자이크가 있는 사진을 먼저 선택하세요. Ctrl+A로 전체 선택할 수 있습니다.')
+            return
+        strength,accepted=QInputDialog.getInt(self,'모자이크 강도 일괄 변경',
+            f'선택한 {len(ids)}장 중 모자이크가 있는 {len(entries)}장 · {count}개 영역\n'
+            '박스와 브러시의 위치·범위는 유지하고 모든 영역의 강도만 변경합니다.\n새 강도 (2~100):',
+            self.strength.value(),2,100,1)
+        if accepted:self.apply_batch_strength(ids,strength)
+    def apply_batch_strength(self,ids,strength):
+        if not 2<=strength<=100:raise ValueError('강도는 2~100 범위여야 합니다.')
+        entries=[self.entries[eid] for eid in set(ids) if eid in self.entries and self.entries[eid]['regions']]
+        changed=[entry for entry in entries if any(r['strength']!=strength for r in entry['regions'])]
+        if not changed:
+            self.status.setText('변경할 모자이크 강도가 없습니다.');return
+        self.snapshot()
+        for entry in changed:
+            for region in entry['regions']:region['strength']=strength
+        # Updating the slider here must not create a separate edit or history entry.
+        self.strength.blockSignals(True);self.strength.setValue(strength);self.strength.blockSignals(False)
+        self.value.setText(str(strength));self.original.setChecked(False);self.render();self.renumber()
+        self.status.setText(f'{len(changed)}장 · {sum(len(e["regions"]) for e in changed)}개 영역 강도를 {strength}로 변경했습니다. Ctrl+Z로 일괄 취소')
     def remove_region(self):
         entry=self.current(); i=self.canvas.active
         if entry and 0<=i<len(entry['regions']):

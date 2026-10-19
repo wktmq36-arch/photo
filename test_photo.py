@@ -186,4 +186,37 @@ class Tests(unittest.TestCase):
    QTest.mouseRelease(handle,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,handle.rect().center());app.processEvents()
    self.assertLess(w.splitter.sizes()[0],old-40)
    w.dirty=False;w.close()
+ def test_batch_strength_preserves_regions_and_undo(self):
+  import copy,json
+  from unittest.mock import patch
+  from PySide6.QtCore import Qt
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths=[]
+   for i in range(4):
+    p=Path(d)/f'{i}.png';Image.effect_noise((200,200),100).convert('RGB').save(p);paths.append(str(p))
+   w=Window();w.add_paths(paths);deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   entries=w.ordered()
+   for i in range(3):
+    entries[i]['regions']=[{'rect':[.1,.1,.7,.7],'strength':6+i},
+     {'kind':'brush','rect':[.15,.15,.85,.85],'radius':.05,'points':[[.2,.2],[.8,.8]],'strength':8-i}]
+   w.renumber();w.list.clearSelection()
+   for i in [0,1,3]:w.list.item(i).setSelected(True)
+   before=copy.deepcopy(w.ordered());history=len(w.history)
+   with patch('main.QInputDialog.getInt',return_value=(20,False)):w.batch_strength_dialog()
+   self.assertEqual(w.ordered(),before);self.assertEqual(len(w.history),history)
+   with patch('main.QInputDialog.getInt',return_value=(20,True)):w.batch_strength_dialog()
+   self.assertEqual(len(w.history),history+1)
+   for i in [0,1]:
+    self.assertTrue(all(r['strength']==20 for r in w.ordered()[i]['regions']))
+    for actual,original in zip(w.ordered()[i]['regions'],before[i]['regions']):
+     self.assertEqual({k:v for k,v in actual.items() if k!='strength'},{k:v for k,v in original.items() if k!='strength'})
+   self.assertEqual(w.ordered()[2],before[2]);self.assertEqual(w.ordered()[3],before[3])
+   project=str(Path(d)/'batch.photo.json')
+   with patch('main.QFileDialog.getSaveFileName',return_value=(project,'')):w.save_project()
+   data=json.loads(Path(project).read_text(encoding='utf-8'))
+   self.assertEqual(data['images'][0]['regions'][0]['strength'],20)
+   w.undo();self.assertEqual(w.ordered(),before)
+   w.dirty=False;w.close()
 if __name__=='__main__':unittest.main()

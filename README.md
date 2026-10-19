@@ -33,3 +33,6 @@ python -m PyInstaller --noconfirm --windowed --onedir --name Photo main.py
 GitHub Actions에서 수동 실행하거나 v로 시작하는 태그를 push하면 Windows 빌드 artifact를 만듭니다. 이미지 및 작업 JSON, 빌드 출력은 소스 저장소에 올리지 않습니다.
 
 Qt/PySide6 및 Pillow 등 의존성의 라이선스는 각 배포 라이선스를 따릅니다.
+
+## 강도 일괄 변경
+썸네일에서 Ctrl/Shift로 여러 장 또는 Ctrl+A로 전체를 선택하고 `선택 사진 강도 일괄 변경`을 누릅니다. 새 강도(2~100)를 입력하면 선택한 사진의 모든 박스·브러시 영역은 그대로 유지하고 강도만 바뀝니다. 모자이크가 없는 사진과 선택하지 않은 사진은 변경하지 않습니다. Ctrl+Z 한 번으로 일괄 변경을 취소합니다. 작업 저장 후 다시 내보내면 변경된 강도가 적용됩니다. 이미 합쳐진 결과 파일이 아니라 원본과 작업 JSON이 필요합니다.
