@@ -1,0 +1,20 @@
+name: Build Windows application
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: pip install -r requirements.txt
+      - run: python -m unittest -v test_photo
+      - run: python -m PyInstaller --noconfirm --windowed --onedir --name Photo main.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Photo-Windows
+          path: dist/Photo/
