@@ -220,7 +220,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.11'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.12'); self.resize(1400,900)
         self.settings=QSettings('PhotoOrganizer','Photo')
         self.export_folder=str(self.settings.value('export/folder',''))
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.dirty=False; self.project=None
@@ -594,7 +594,7 @@ class Window(QMainWindow):
                 self.exported_files+=len(result[1])
                 if outputs['main'] and entries[index].get('main_selected',False):self.exported_main+=1
             self.progress.setValue(index+1); self.export_next(entries,index+1,destination,fmt,ext,stem,outputs)
-        self.run_job(self.export_pool,lambda:export_pair(entries[index],index+1,destination,fmt,stem,outputs),complete)
+        self.run_job(self.export_pool,lambda:export_pair(entries[index],index+1,destination,fmt,stem,outputs,self.exported_main+1),complete)
     def closeEvent(self,event):
         if self.busy:QMessageBox.information(self,'내보내기 중','내보내기가 끝난 후 종료하세요.'); event.ignore(); return
         if not self.confirm_discard():event.ignore(); return

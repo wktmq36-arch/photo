@@ -300,9 +300,9 @@ class Tests(unittest.TestCase):
    output=Path(d)/'a'
    self.assertTrue(output.is_dir())
    self.assertFalse(list(Path(d).glob('Photo_*')))
-   self.assertEqual([p.name for p in (output/'a_main').iterdir()],['002.png'])
-   self.assertEqual((output/'a_main/002.png').read_bytes(),(output/'a_cen/002.png').read_bytes())
-   with Image.open(output/'a_main/002.png') as main_image:self.assertFalse(main_image.getexif())
+   self.assertEqual([p.name for p in (output/'a_main').iterdir()],['001.png'])
+   self.assertEqual((output/'a_main/001.png').read_bytes(),(output/'a_cen/002.png').read_bytes())
+   with Image.open(output/'a_main/001.png') as main_image:self.assertFalse(main_image.getexif())
    for folder,ext in [('a_cen','png'),('a_uncen','webp')]:
     self.assertEqual(len(list((output/folder).iterdir())),2)
     with Image.open(output/folder/('001.'+ext)) as im:self.assertEqual(im.getpixel((0,0))[:3],(0,0,255))
@@ -399,5 +399,27 @@ class Tests(unittest.TestCase):
    self.assertEqual(w.project,second);self.assertTrue(Path(second).exists())
    deadline=time.monotonic()+10
    while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close()
+ def test_sparse_main_selection_has_consecutive_numbers(self):
+  from unittest.mock import patch
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths=[]
+   for i in range(6):
+    p=Path(d)/f'{i}.webp';Image.new('RGB',(80,60),(i*30,0,0)).save(p,lossless=True);paths.append(str(p))
+   w=Window();w.add_paths(paths)
+   for i in [0,3,5]:w.ordered()[i]['main_selected']=True
+   w.list.move_ids([w.ordered()[5]['id']],0)
+   for main_only in [False,True]:
+    name='mainonly' if main_only else 'all';w.export_name.setText(name)
+    w.output_checks['cen'].setChecked(not main_only);w.output_checks['uncen'].setChecked(not main_only)
+    with patch('main.QFileDialog.getExistingDirectory',return_value=d),patch('main.QMessageBox.information'):
+     w.export();deadline=time.monotonic()+10
+     while (w.busy or w.jobs) and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+    folder=Path(d)/name/(name+'_main')
+    self.assertEqual(sorted(p.name for p in folder.iterdir()),['001.png','002.png','003.png'])
+    for i,color in enumerate([150,0,90],1):
+     with Image.open(folder/f'{i:03d}.png') as image:self.assertEqual(image.getpixel((0,0))[:3],(color,0,0))
+    if not main_only:self.assertEqual(len(list((Path(d)/name/(name+'_cen')).iterdir())),6)
    w.dirty=False;w.close()
 if __name__=='__main__':unittest.main()

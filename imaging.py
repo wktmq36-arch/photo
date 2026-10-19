@@ -125,14 +125,14 @@ def strip_metadata(source, destination):
         if check.getexif() or set(check.info)&{'exif','xmp','XML:com.adobe.xmp','icc_profile','comment','Comment','parameters','prompt','workflow'}:
             raise RuntimeError('원본 메타데이터 제거 검증 실패')
 
-def export_pair(entry, index, destination, fmt, stem, outputs=None):
+def export_pair(entry, index, destination, fmt, stem, outputs=None, main_index=None):
     outputs=outputs or {'cen':True,'uncen':True,'main':True}
     destination=Path(destination);number=f'{index:03d}'
     ext={'PNG':'png','WEBP':'webp','JPEG':'jpg'}[fmt]
     created=[]
-    def target(kind,suffix):
+    def target(kind,suffix,number_override=None):
         folder=destination/(stem+'_'+kind);folder.mkdir(exist_ok=True)
-        path=folder/(number+suffix);created.append(path);return path
+        path=folder/((number_override or number)+suffix);created.append(path);return path
     try:
         if outputs.get('uncen'):
             strip_metadata(entry['path'],target('uncen',Path(entry['path']).suffix))
@@ -140,7 +140,7 @@ def export_pair(entry, index, destination, fmt, stem, outputs=None):
         if outputs.get('cen'):
             processed=target('cen','.'+ext);export_image(entry,processed,fmt)
         if outputs.get('main') and entry.get('main_selected',False):
-            main_output=target('main','.'+ext)
+            main_output=target('main','.'+ext,f'{main_index if main_index is not None else index:03d}')
             if processed is not None:
                 import shutil
                 shutil.copyfile(processed,main_output)
