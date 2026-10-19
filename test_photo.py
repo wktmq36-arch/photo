@@ -99,4 +99,44 @@ class Tests(unittest.TestCase):
    self.assertEqual([e['path'] for e in w.ordered()],[paths[1],paths[2],paths[0]])
    while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
    w.dirty=False;w.close()
+ def test_mouse_drag_then_save_reload_and_export(self):
+  from unittest.mock import patch
+  from PySide6.QtCore import Qt,QPoint
+  from PySide6.QtTest import QTest
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths=[]
+   for i,color in enumerate(['red','green','blue','yellow','purple','orange']):
+    p=Path(d)/f'{i}.png'; Image.new('RGB',(80,60),color).save(p); paths.append(str(p))
+   w=Window(); w.show(); w.activateWindow(); w.add_paths(paths); deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   viewport=w.list.viewport()
+   def drag(source,target,after):
+    start=w.list.visualItemRect(w.list.item(source)).center()
+    rect=w.list.visualItemRect(w.list.item(target))
+    finish=QPoint(rect.right()-8 if after else rect.left()+8,rect.center().y())
+    QTest.mousePress(viewport,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,start)
+    QTest.mouseMove(viewport,finish,50);app.processEvents()
+    self.assertTrue(w.list.dragging)
+    self.assertIsNotNone(w.list.drop_target)
+    QTest.mouseRelease(viewport,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,finish)
+    app.processEvents()
+   drag(0,5,True)
+   expected=paths[1:]+paths[:1]
+   self.assertEqual([e['path'] for e in w.ordered()],expected)
+   drag(5,0,False)
+   self.assertEqual([e['path'] for e in w.ordered()],paths)
+   drag(0,5,True)
+   project=str(Path(d)/'order.photo.json')
+   with patch('main.QFileDialog.getSaveFileName',return_value=(project,'')):w.save_project()
+   import json
+   self.assertEqual([e['path'] for e in json.loads(Path(project).read_text(encoding='utf-8'))['images']],expected)
+   w.populate([]);w.dirty=False
+   with patch('main.QFileDialog.getOpenFileName',return_value=(project,'')):w.load_project()
+   self.assertEqual([e['path'] for e in w.ordered()],expected)
+   for i,entry in enumerate(w.ordered()):
+    out=Path(d)/f'output{i+1:03d}.png';export_image(entry,out,'PNG')
+    with Image.open(out) as result,Image.open(expected[i]) as original:self.assertEqual(result.getpixel((0,0))[:3],original.getpixel((0,0)))
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close()
 if __name__=='__main__':unittest.main()

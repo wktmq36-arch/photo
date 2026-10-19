@@ -41,20 +41,66 @@ class ImageList(QListWidget):
         self.setSpacing(5); self.setAcceptDrops(True)
         self.setSelectionRectVisible(False)
         self.empty_press=False
+        self.press_position=None; self.drag_ids=[]; self.dragging=False; self.drop_target=None
+        self.setMouseTracking(True)
     def mousePressEvent(self,event):
         self.empty_press=not self.indexAt(event.position().toPoint()).isValid()
+        self.press_position=None; self.dragging=False; self.drop_target=None
         if self.empty_press:
             if not event.modifiers():self.clearSelection()
             event.accept(); return
         super().mousePressEvent(event)
+        if event.button()==Qt.MouseButton.LeftButton:
+            self.press_position=event.position().toPoint()
+            self.drag_ids=[self.item(row).data(Qt.ItemDataRole.UserRole) for row in range(self.count()) if self.item(row).isSelected()]
+    def target_at(self,pos):
+        index=self.indexAt(pos)
+        if index.isValid():
+            return index.row()+(pos.x()>=self.visualRect(index).center().x())
+        # Gaps between tiles map to the closest tile, including blank row ends.
+        candidates=[]
+        for row in range(self.count()):
+            rect=self.visualItemRect(self.item(row))
+            if rect.bottom()<0 or rect.top()>self.viewport().height():continue
+            dx=max(rect.left()-pos.x(),0,pos.x()-rect.right())
+            dy=max(rect.top()-pos.y(),0,pos.y()-rect.bottom())
+            candidates.append((dx*dx+dy*dy,row,rect))
+        if not candidates:return self.count()
+        _,row,rect=min(candidates,key=lambda value:value[0])
+        return row+(pos.x()>=rect.center().x())
     def mouseMoveEvent(self,event):
-        if self.empty_press:
+        if self.press_position is not None:
+            pos=event.position().toPoint()
+            if not self.dragging and (pos-self.press_position).manhattanLength()>=QApplication.startDragDistance():
+                self.dragging=True; self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+            if self.dragging:
+                bar=self.verticalScrollBar()
+                if pos.y()<30:bar.setValue(bar.value()-24)
+                elif pos.y()>self.viewport().height()-30:bar.setValue(bar.value()+24)
+                self.drop_target=self.target_at(pos); self.viewport().update()
             event.accept(); return
+        if self.empty_press:event.accept(); return
         super().mouseMoveEvent(event)
     def mouseReleaseEvent(self,event):
+        if self.dragging:
+            target=self.target_at(event.position().toPoint()); ids=self.drag_ids[:]
+            self.press_position=None; self.dragging=False; self.drop_target=None
+            self.viewport().unsetCursor(); self.move_ids(ids,target); self.viewport().update()
+            self.setState(QAbstractItemView.State.NoState)
+            event.accept(); return
+        self.press_position=None
         if self.empty_press:
             self.empty_press=False; event.accept(); return
         super().mouseReleaseEvent(event)
+    def paintEvent(self,event):
+        super().paintEvent(event)
+        if self.drop_target is None or not self.count():return
+        painter=QPainter(self.viewport()); painter.setPen(QPen(QColor('#ffab40'),4))
+        if self.drop_target<self.count():
+            rect=self.visualItemRect(self.item(self.drop_target)); x=rect.left()-2
+        else:
+            rect=self.visualItemRect(self.item(self.count()-1)); x=rect.right()+2
+        painter.drawLine(x,rect.top(),x,rect.bottom())
     MIME = 'application/x-photo-item-ids'
     def startDrag(self, supported_actions):
         ids=[self.item(row).data(Qt.ItemDataRole.UserRole) for row in range(self.count()) if self.item(row).isSelected()]
@@ -149,7 +195,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.1'); self.resize(1400,900)
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.dirty=False; self.project=None
         self.pool=QThreadPool(self); self.pool.setMaxThreadCount(4)
         self.preview_pool=QThreadPool(self); self.preview_pool.setMaxThreadCount(2)
@@ -425,5 +471,26 @@ if __name__=='__main__':
         assert sample.pixelColor(0,0).red()==12
         window.canvas.pixmap=QPixmap.fromImage(sample)
         window.canvas.update()
+        from PySide6.QtTest import QTest
+        from PySide6.QtCore import QPoint
+        import tempfile
+        smoke_folder=tempfile.TemporaryDirectory()
+        smoke_paths=[]
+        for index,color in enumerate(['red','green','blue']):
+            path=Path(smoke_folder.name)/f'{index}.png'
+            Image.new('RGB',(80,60),color).save(path); smoke_paths.append(str(path))
+        window.add_paths(smoke_paths); app.processEvents()
+        start=window.list.visualItemRect(window.list.item(0)).center()
+        rect=window.list.visualItemRect(window.list.item(2))
+        finish=QPoint(rect.right()-8,rect.center().y())
+        viewport=window.list.viewport()
+        QTest.mousePress(viewport,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,start)
+        QTest.mouseMove(viewport,finish,50)
+        assert window.list.dragging
+        QTest.mouseRelease(viewport,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,finish)
+        assert [entry['path'] for entry in window.ordered()]==smoke_paths[1:]+smoke_paths[:1]
+        for index,entry in enumerate(window.ordered()):
+            export_image(entry,Path(smoke_folder.name)/f'output{index}.png','PNG')
+        window.dirty=False
         QTimer.singleShot(1000,app.quit)
     sys.exit(app.exec())
