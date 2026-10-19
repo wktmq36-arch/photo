@@ -422,4 +422,46 @@ class Tests(unittest.TestCase):
      with Image.open(folder/f'{i:03d}.png') as image:self.assertEqual(image.getpixel((0,0))[:3],(color,0,0))
     if not main_only:self.assertEqual(len(list((Path(d)/name/(name+'_cen')).iterdir())),6)
    w.dirty=False;w.close()
+ def test_clone_render_and_original_export(self):
+  from imaging import render_entry,export_pair
+  from PIL import ImageDraw
+  with tempfile.TemporaryDirectory() as d:
+   source=Path(d)/'source.webp';image=Image.new('RGB',(400,300),'blue');ImageDraw.Draw(image).rectangle((0,0,199,299),fill='red');image.save(source,lossless=True)
+   stroke={'source':[.2,.5],'points':[[.7,.5],[.75,.5]],'radius':.05,'softness':0}
+   entry={'path':str(source),'regions':[],'clones':[stroke],'main_selected':True}
+   result=render_entry(image.convert('RGBA'),entry)
+   self.assertEqual(result.getpixel((280,150)),(255,0,0,255));self.assertEqual(result.getpixel((280,250)),(0,0,255,255))
+   export_pair(entry,1,d,'PNG','a',main_index=1)
+   with Image.open(Path(d)/'a_cen/001.png') as processed:self.assertEqual(processed.getpixel((280,150))[:3],(255,0,0))
+   with Image.open(Path(d)/'a_uncen/001.webp') as original:self.assertEqual(original.getpixel((280,150))[:3],(0,0,255))
+   self.assertEqual((Path(d)/'a_cen/001.png').read_bytes(),(Path(d)/'a_main/001.png').read_bytes())
+ def test_clone_mouse_gesture_save_and_undo(self):
+  from unittest.mock import patch
+  from PySide6.QtCore import Qt,QPoint
+  from PySide6.QtTest import QTest
+  from PIL import ImageDraw
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   source=Path(d)/'source.png';image=Image.new('RGB',(400,300),'blue');ImageDraw.Draw(image).rectangle((0,0,199,299),fill='red');image.save(source)
+   w=Window();w.show();w.add_paths([str(source)]);deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.tool.setCurrentIndex(2);w.clone_softness.setValue(0);app.processEvents()
+   rect=w.canvas.target
+   point=lambda x,y:QPoint(round(rect.x()+rect.width()*x),round(rect.y()+rect.height()*y))
+   QTest.mouseClick(w.canvas,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.AltModifier,point(.2,.5))
+   self.assertIsNotNone(w.canvas.clone_source)
+   history=len(w.history)
+   QTest.mousePress(w.canvas,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,point(.7,.5))
+   QTest.mouseMove(w.canvas,point(.75,.5),30)
+   QTest.mouseRelease(w.canvas,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,point(.75,.5));app.processEvents()
+   self.assertEqual(len(w.current()['clones']),1);self.assertEqual(len(w.history),history+1)
+   self.assertGreater(w.canvas.pixmap.toImage().pixelColor(280,150).red(),240)
+   project=str(Path(d)/'clone.photo.json')
+   with patch('main.QFileDialog.getSaveFileName',return_value=(project,'')):w.save_project()
+   w.undo();self.assertFalse(w.current()['clones'])
+   w.dirty=False
+   with patch('main.QFileDialog.getOpenFileName',return_value=(project,'')):w.load_project()
+   self.assertEqual(len(w.current()['clones']),1)
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close()
 if __name__=='__main__':unittest.main()

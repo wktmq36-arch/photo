@@ -1,4 +1,4 @@
-from PIL import Image, ImageOps, ImageDraw
+from PIL import Image, ImageOps, ImageDraw, ImageFilter, ImageChops
 from pathlib import Path
 import math
 
@@ -36,8 +36,33 @@ def render_regions(image, regions):
         result.paste(mosaic, box, mask)
     return result
 
+def render_clones(image, strokes):
+    result=image.copy();width,height=image.size
+    for stroke in strokes:
+        points=[(x*width,y*height) for x,y in stroke['points']]
+        if not points:continue
+        radius=max(1,stroke['radius']*width)
+        mask=Image.new('L',image.size,0);draw=ImageDraw.Draw(mask)
+        if len(points)>1:draw.line(points,fill=255,width=max(1,round(radius*2)))
+        for x,y in points:draw.ellipse((x-radius,y-radius,x+radius,y+radius),fill=255)
+        softness=stroke.get('softness',.5)
+        if softness>0:mask=mask.filter(ImageFilter.GaussianBlur(radius*softness*.45))
+        dx=round(points[0][0]-stroke['source'][0]*width)
+        dy=round(points[0][1]-stroke['source'][1]*height)
+        shifted=Image.new('RGBA',image.size,(0,0,0,0));shifted.paste(result,(dx,dy))
+        valid=Image.new('L',image.size,0)
+        left,top=max(0,dx),max(0,dy);right,bottom=min(width,width+dx),min(height,height+dy)
+        if left>=right or top>=bottom:continue
+        ImageDraw.Draw(valid).rectangle((left,top,right-1,bottom-1),fill=255)
+        result=Image.composite(shifted,result,ImageChops.multiply(mask,valid))
+    return result
+
+def render_entry(image,entry):
+    # Retouch first; censor last, so a clone can never undo a mosaic.
+    return render_regions(render_clones(image,entry.get('clones',[])),entry['regions'])
+
 def export_image(entry, destination, fmt):
-    result = render_regions(read_pixels(entry['path']), entry['regions'])
+    result = render_entry(read_pixels(entry['path']), entry)
     clean = Image.frombytes('RGBA', result.size, result.tobytes())
     if fmt == 'JPEG':
         background = Image.new('RGB', clean.size, 'white')

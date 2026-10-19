@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, 
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
     QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit)
 from exporting import prepare_output
-from imaging import EXTENSIONS, read_pixels, render_regions, export_image, export_pair
+from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, export_image, export_pair
 
 def to_qimage(image):
     rgba = image.convert('RGBA')
@@ -176,6 +176,7 @@ class Canvas(QWidget):
         super().__init__(); self.setMinimumSize(320, 300)
         self.pixmap = None; self.regions = []; self.active = -1; self.start = None; self.end = None
         self.tool='box'; self.brush_radius=.025; self.stroke=[]; self.drawing_brush=False
+        self.clone_source=None;self.drawing_clone=False;self.clone_softness=.5;self.hover=None;self.setMouseTracking(True)
         self.zoom = 1.0; self.target = QRectF()
     def normalized(self, point):
         return (max(0., min(1., (point.x()-self.target.x())/max(1,self.target.width()))),
@@ -189,9 +190,22 @@ class Canvas(QWidget):
         self.target = QRectF((self.width()-w)/2,(self.height()-h)/2,w,h)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         p.drawPixmap(self.target, self.pixmap, QRectF(self.pixmap.rect()))
+        if self.tool=='clone':
+            p.setPen(QPen(QColor('#ffcf66'),1))
+            if self.clone_source is not None:
+                x=self.target.x()+self.clone_source[0]*w;y=self.target.y()+self.clone_source[1]*h
+                p.drawLine(int(x)-6,int(y),int(x)+6,int(y));p.drawLine(int(x),int(y)-6,int(x),int(y)+6)
+            if self.hover is not None and self.target.contains(self.hover):
+                radius=self.brush_radius*w;p.drawEllipse(self.hover,radius,radius)
         if self.start is not None and self.end is not None:
             p.setPen(QPen(QColor('#ffffff'),2,Qt.PenStyle.DashLine)); p.drawRect(QRectF(self.start,self.end).normalized())
     def mousePressEvent(self,event):
+        if self.pixmap and self.tool=='clone' and event.button()==Qt.MouseButton.LeftButton and self.target.contains(event.position()):
+            if event.modifiers() & Qt.KeyboardModifier.AltModifier:
+                self.clone_source=self.normalized(event.position());self.selected.emit(('clone_source',self.clone_source));self.update();return
+            if self.clone_source is None:self.selected.emit(('clone_missing',None));return
+            self.drawing_clone=True;self.stroke=[self.normalized(event.position())]
+            self.selected.emit(('clone_start',{'source':list(self.clone_source),'points':self.stroke.copy(),'radius':self.brush_radius,'softness':self.clone_softness}));return
         if self.pixmap and event.button()==Qt.MouseButton.LeftButton and self.target.contains(event.position()):
             if self.tool=='brush':
                 self.drawing_brush=True; self.stroke=[self.normalized(event.position())]
@@ -199,12 +213,17 @@ class Canvas(QWidget):
             else:
                 self.start=event.position(); self.end=self.start
     def mouseMoveEvent(self,event):
+        self.hover=event.position();self.update()
+        if self.drawing_clone:
+            self.stroke.append(self.normalized(event.position()));self.selected.emit(('clone_move',self.stroke.copy()));return
         if self.drawing_brush:
             self.stroke.append(self.normalized(event.position()))
             self.selected.emit(('brush_move',self.stroke.copy()))
             return
         if self.start is not None: self.end=event.position(); self.update()
     def mouseReleaseEvent(self,event):
+        if self.drawing_clone:
+            self.stroke.append(self.normalized(event.position()));self.selected.emit(('clone_move',self.stroke.copy()));self.drawing_clone=False;return
         if self.drawing_brush:
             self.stroke.append(self.normalized(event.position()))
             self.selected.emit(('brush_move',self.stroke.copy()))
@@ -220,7 +239,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.12'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.13'); self.resize(1400,900)
         self.settings=QSettings('PhotoOrganizer','Photo')
         self.export_folder=str(self.settings.value('export/folder',''))
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.dirty=False; self.project=None
@@ -262,14 +281,20 @@ class Window(QMainWindow):
         self.canvas=Canvas(); rl.addWidget(self.canvas,1)
         brush_tools=QHBoxLayout(); rl.addLayout(brush_tools)
         brush_tools.addWidget(QLabel('도구'))
-        self.tool=QComboBox(); self.tool.addItems(['박스','브러시']); brush_tools.addWidget(self.tool)
-        self.tool.currentIndexChanged.connect(lambda index:setattr(self.canvas,'tool','brush' if index else 'box'))
+        self.tool=QComboBox(); self.tool.addItems(['박스','브러시','복제 도장']); brush_tools.addWidget(self.tool)
+        self.tool.currentIndexChanged.connect(lambda index:(setattr(self.canvas,'tool',['box','brush','clone'][index]),self.canvas.update()))
         brush_tools.addWidget(QLabel('브러시 크기'))
         self.brush_size=QSlider(Qt.Orientation.Horizontal); self.brush_size.setRange(5,200); self.brush_size.setValue(50)
         self.brush_size.valueChanged.connect(lambda value:setattr(self.canvas,'brush_radius',value/2000))
         brush_tools.addWidget(self.brush_size)
         self.brush_value=QLabel('50'); brush_tools.addWidget(self.brush_value)
         self.brush_size.valueChanged.connect(lambda value:self.brush_value.setText(str(value)))
+        softness_tools=QHBoxLayout();rl.addLayout(softness_tools)
+        softness_tools.addWidget(QLabel('도장 경계 부드러움'))
+        self.clone_softness=QSlider(Qt.Orientation.Horizontal);self.clone_softness.setRange(0,100);self.clone_softness.setValue(50)
+        self.clone_softness.valueChanged.connect(lambda value:setattr(self.canvas,'clone_softness',value/100))
+        softness_tools.addWidget(self.clone_softness)
+        softness_tools.addWidget(QLabel('도장: Alt+클릭으로 기준점 · 드래그로 덮기'))
         tools=QHBoxLayout(); rl.addLayout(tools)
         tools.addWidget(QLabel('모자이크 강도'))
         self.strength=QSlider(Qt.Orientation.Horizontal); self.strength.setTracking(True); self.strength.setRange(2,100); self.strength.setValue(20); tools.addWidget(self.strength)
@@ -340,6 +365,7 @@ class Window(QMainWindow):
         else: self.canvas.pixmap=None; self.canvas.update()
     def insert_entry(self,entry):
         entry.setdefault('main_selected',False)
+        entry.setdefault('clones',[])
         self.entries[entry['id']]=entry
         item=QListWidgetItem(Path(entry['path']).name); item.setData(Qt.ItemDataRole.UserRole,entry['id']); item.setToolTip(entry['path']); self.list.addItem(item)
         path=entry['path']
@@ -374,7 +400,7 @@ class Window(QMainWindow):
     def renumber(self):
         for i in range(self.list.count()):
             item=self.list.item(i); entry=self.entries[item.data(Qt.ItemDataRole.UserRole)]
-            item.setText(f'{i+1:03d}  '+Path(entry['path']).name)
+            item.setText(f'{i+1:03d}  '+Path(entry['path']).name+('  [도장]' if entry.get('clones') else ''))
             item.setData(MOSAIC_ROLE,bool(entry['regions']))
             item.setData(MAIN_ROLE,bool(entry.get('main_selected',False)))
             item.setToolTip(entry['path']+(f'\n모자이크 적용 · {len(entry["regions"])}개 영역' if entry['regions'] else '\n모자이크 없음'))
@@ -413,6 +439,7 @@ class Window(QMainWindow):
         self.snapshot();entry['main_selected']=checked;self.renumber()
     def selection_changed(self,*args):
         self.sync_main_check()
+        self.canvas.clone_source=None;self.canvas.drawing_clone=False
         self.canvas.active=-1; self.original.setChecked(False)
         entry=self.current()
         self.canvas.pixmap=None; self.canvas.regions=[]; self.canvas.update()
@@ -449,13 +476,22 @@ class Window(QMainWindow):
         entry=self.current()
         if not entry or entry['path'] not in self.cache:return
         image=self.cache[entry['path']]
-        image=image if self.original.isChecked() else render_regions(image,entry['regions'])
+        image=image if self.original.isChecked() else render_entry(image,entry)
         self.canvas.pixmap=QPixmap.fromImage(to_qimage(image))
         self.canvas.regions=[] if self.original.isChecked() else entry['regions']; self.canvas.update()
     def region_event(self,event):
         entry=self.current()
         if not entry or self.original.isChecked():return
-        if event[0]=='brush_start':
+        if event[0]=='clone_missing':
+            self.status.setText('복제 도장: Alt+클릭으로 복사할 기준점을 먼저 선택하세요.');return
+        if event[0]=='clone_source':
+            self.status.setText('도장 기준점 선택 완료 · 지울 부위를 드래그하세요.');return
+        if event[0]=='clone_start':
+            self.snapshot();entry.setdefault('clones',[]).append(event[1]);self.canvas.active=-1
+        elif event[0]=='clone_move':
+            if not entry.get('clones'):return
+            entry['clones'][-1]['points']=event[1]
+        elif event[0]=='brush_start':
             self.snapshot()
             region={'kind':'brush','points':event[1]['points'],'radius':event[1]['radius'],'strength':self.strength.value()}
             self.brush_bounds(region); entry['regions'].append(region); self.canvas.active=len(entry['regions'])-1
@@ -538,6 +574,11 @@ class Window(QMainWindow):
             for e in entries:
                 if not isinstance(e.get('main_selected',False),bool):raise ValueError('잘못된 메인 선택 상태')
                 if not isinstance(e['path'],str) or not isinstance(e['regions'],list):raise ValueError('잘못된 작업 파일')
+                if not isinstance(e.get('clones',[]),list):raise ValueError('잘못된 도장 데이터')
+                for stroke in e.get('clones',[]):
+                    def valid_point(point):return isinstance(point,(list,tuple)) and len(point)==2 and all(isinstance(v,(int,float)) and 0<=v<=1 for v in point)
+                    if not valid_point(stroke.get('source')) or not isinstance(stroke.get('points'),list) or not stroke['points'] or not all(valid_point(point) for point in stroke['points']):raise ValueError('잘못된 도장 좌표')
+                    if not 0<stroke.get('radius',0)<=.1 or not 0<=stroke.get('softness',.5)<=1:raise ValueError('잘못된 도장 크기')
                 for r in e['regions']:
                     if len(r['rect'])!=4 or not all(isinstance(v,(int,float)) and 0<=v<=1 for v in r['rect']) or not 2<=r['strength']<=100:raise ValueError('잘못된 모자이크 영역')
                     if r.get('kind')=='brush':
