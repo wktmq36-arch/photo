@@ -219,4 +219,33 @@ class Tests(unittest.TestCase):
    self.assertEqual(data['images'][0]['regions'][0]['strength'],20)
    w.undo();self.assertEqual(w.ordered(),before)
    w.dirty=False;w.close()
+ def test_delete_selects_successor_and_last_predecessor(self):
+  from PySide6.QtCore import Qt
+  from PySide6.QtTest import QTest
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths=[]
+   for i in range(6):
+    p=Path(d)/f'{i}.png';Image.new('RGB',(80,60),'red').save(p);paths.append(str(p))
+   w=Window();w.show();w.activateWindow();w.add_paths(paths);deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.list.setCurrentRow(2);w.list.setFocus()
+   QTest.keyClick(w.list,Qt.Key.Key_Delete);app.processEvents()
+   self.assertEqual(w.current()['path'],paths[3]);self.assertEqual(len(w.list.selectedItems()),1)
+   self.assertEqual(w.title.text(),Path(paths[3]).name)
+   QTest.keyClick(w.list,Qt.Key.Key_Delete);app.processEvents()
+   self.assertEqual(w.current()['path'],paths[4])
+   last=w.list.visualItemRect(w.list.item(w.list.count()-1)).center()
+   QTest.mouseClick(w.list.viewport(),Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,last);w.remove_selected()
+   self.assertEqual(w.current()['path'],paths[4])
+   w.undo();self.assertEqual(w.current()['path'],paths[5])
+   w.list.clearSelection()
+   w.list.item(1).setSelected(True);w.list.item(3).setSelected(True)
+   w.remove_selected();self.assertEqual(w.current()['path'],paths[4])
+   w.list.selectAll();w.remove_selected()
+   self.assertIsNone(w.current());self.assertEqual(w.list.count(),0)
+   self.assertIsNone(w.canvas.pixmap);w.remove_selected()
+   w.undo();self.assertEqual(w.list.count(),2)
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close()
 if __name__=='__main__':unittest.main()

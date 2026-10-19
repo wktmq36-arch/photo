@@ -1,7 +1,7 @@
 import sys, json, uuid, copy, time
 from pathlib import Path
 from collections import OrderedDict
-from PySide6.QtCore import Qt, QSize, QRectF, Signal, QObject, QRunnable, QThreadPool, QTimer, QMimeData
+from PySide6.QtCore import Qt, QSize, QRectF, Signal, QObject, QRunnable, QThreadPool, QTimer, QMimeData, QItemSelectionModel
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKeySequence, QFontDatabase, QFont, QShortcut, QDrag
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem,
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
@@ -214,7 +214,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.4'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.5'); self.resize(1400,900)
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.dirty=False; self.project=None
         self.pool=QThreadPool(self); self.pool.setMaxThreadCount(4)
         self.preview_pool=QThreadPool(self); self.preview_pool.setMaxThreadCount(2)
@@ -356,12 +356,23 @@ class Window(QMainWindow):
         self.status.setText(f'총 {self.list.count()}장 · 모자이크 {sum(bool(e["regions"]) for e in self.entries.values())}장')
     def order_changed(self):self.dirty=True; self.renumber()
     def remove_selected(self):
-        items=self.list.selectedItems()
-        if not items:return
-        self.snapshot()
-        self.list.blockSignals(True)
-        for item in items:
-            self.entries.pop(item.data(Qt.ItemDataRole.UserRole),None); self.list.takeItem(self.list.row(item))
+        rows=sorted(self.list.row(item) for item in self.list.selectedItems())
+        if not rows:return
+        # Pick by the current visual order, never by Qt's implicit selection
+        # changes while individual rows are being removed.
+        next_row=rows[0]
+        self.snapshot(); self.list.blockSignals(True)
+        for row in reversed(rows):
+            item=self.list.takeItem(row)
+            self.entries.pop(item.data(Qt.ItemDataRole.UserRole),None)
+        self.list.clearSelection()
+        if self.list.count():
+            next_row=min(next_row,self.list.count()-1)
+            self.list.setCurrentRow(next_row,QItemSelectionModel.SelectionFlag.ClearAndSelect)
+            self.list.item(next_row).setSelected(True)
+            self.list.scrollToItem(self.list.item(next_row))
+        else:
+            self.list.setCurrentRow(-1)
         self.list.blockSignals(False)
         self.renumber(); self.selection_changed()
     def navigate(self,step):self.list.setCurrentRow(max(0,min(self.list.count()-1,self.list.currentRow()+step)))
