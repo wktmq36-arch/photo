@@ -167,4 +167,23 @@ class Tests(unittest.TestCase):
   drag(2,QPoint(-20,first_row.center().y()))
   self.assertEqual([view.item(i).text() for i in range(6)],['2','1','3','4','5','6'])
   view.close()
+ def test_mosaic_badge_and_resizable_splitter(self):
+  from main import MOSAIC_ROLE
+  from PySide6.QtCore import Qt,QPoint
+  from PySide6.QtTest import QTest
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   p=Path(d)/'test.png';Image.new('RGB',(100,100),'red').save(p)
+   w=Window();w.show();w.add_paths([str(p)]);deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   self.assertFalse(w.list.item(0).data(MOSAIC_ROLE))
+   w.region_event(('add',[.1,.1,.8,.8]));self.assertTrue(w.list.item(0).data(MOSAIC_ROLE))
+   w.remove_region();self.assertFalse(w.list.item(0).data(MOSAIC_ROLE))
+   w.undo();self.assertTrue(w.list.item(0).data(MOSAIC_ROLE))
+   old=w.splitter.sizes()[0];handle=w.splitter.handle(1);center=handle.rect().center()
+   QTest.mousePress(handle,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,center)
+   QTest.mouseMove(handle,center+QPoint(-100,0),40);app.processEvents()
+   QTest.mouseRelease(handle,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,handle.rect().center());app.processEvents()
+   self.assertLess(w.splitter.sizes()[0],old-40)
+   w.dirty=False;w.close()
 if __name__=='__main__':unittest.main()

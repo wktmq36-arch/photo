@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt, QSize, QRectF, Signal, QObject, QRunnable, QThrea
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKeySequence, QFontDatabase, QFont, QShortcut, QDrag
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem,
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
-    QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea)
+    QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout)
 from imaging import EXTENSIONS, read_pixels, render_regions, export_image
 
 def to_qimage(image):
@@ -24,12 +24,26 @@ class Job(QRunnable):
         except Exception as exc: result = (False, str(exc))
         self.signals.done.emit(result)
 
+MOSAIC_ROLE = int(Qt.ItemDataRole.UserRole) + 1
+
+class ThumbnailDelegate(QStyledItemDelegate):
+    def paint(self,painter,option,index):
+        super().paint(painter,option,index)
+        if not index.data(MOSAIC_ROLE):return
+        painter.save()
+        font=painter.font(); font.setPixelSize(11); font.setBold(True); painter.setFont(font)
+        badge=QRectF(option.rect.right()-68,option.rect.top()+5,64,23)
+        painter.setPen(Qt.PenStyle.NoPen); painter.setBrush(QColor('#137c59')); painter.drawRoundedRect(badge,5,5)
+        painter.setPen(QColor('white')); painter.drawText(badge,Qt.AlignmentFlag.AlignCenter,'모자이크')
+        painter.restore()
+
 class ImageList(QListWidget):
     dropped = Signal(list)
     reordered = Signal()
     reordering = Signal()
     def __init__(self):
         super().__init__()
+        self.setItemDelegate(ThumbnailDelegate(self))
         self.setViewMode(QListWidget.ViewMode.IconMode)
         self.setIconSize(QSize(140, 110)); self.setGridSize(QSize(164, 150))
         self.setResizeMode(QListWidget.ResizeMode.Adjust)
@@ -200,7 +214,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.2'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.3'); self.resize(1400,900)
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.dirty=False; self.project=None
         self.pool=QThreadPool(self); self.pool.setMaxThreadCount(4)
         self.preview_pool=QThreadPool(self); self.preview_pool.setMaxThreadCount(2)
@@ -212,10 +226,15 @@ class Window(QMainWindow):
             button=QPushButton(label); button.clicked.connect(fn); top.addWidget(button)
         top.addStretch(); self.format=QComboBox(); self.format.addItems(['PNG','WEBP','JPEG']); top.addWidget(self.format)
         self.export_button=QPushButton('순서대로 내보내기'); self.export_button.clicked.connect(self.export); top.addWidget(self.export_button)
-        splitter=QSplitter(); layout.addWidget(splitter,1)
+        self.splitter=QSplitter(Qt.Orientation.Horizontal); splitter=self.splitter
+        splitter.setHandleWidth(14); splitter.setChildrenCollapsible(False)
+        splitter.setStyleSheet('QSplitter::handle:horizontal {background:#687c94; border:4px solid #dfe5ed; border-radius:5px;} QSplitter::handle:horizontal:hover {background:#2788e8;}')
+        layout.addWidget(splitter,1)
         left=QWidget(); ll=QVBoxLayout(left); ll.addWidget(QLabel('썸네일 드래그로 순서 변경 · Delete로 제외'))
         self.list=ImageList(); ll.addWidget(self.list); splitter.addWidget(left)
-        right=QWidget(); rl=QVBoxLayout(right)
+        left.setMinimumWidth(180)
+        right=QWidget(); right.setMinimumWidth(460); rl=QVBoxLayout(right)
+        rl.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         self.title=QLabel('그림을 선택하세요'); rl.addWidget(self.title)
         self.canvas=Canvas(); rl.addWidget(self.canvas,1)
         brush_tools=QHBoxLayout(); rl.addLayout(brush_tools)
@@ -236,6 +255,8 @@ class Window(QMainWindow):
         self.original=QPushButton('원본 비교'); self.original.setCheckable(True); tools.addWidget(self.original); self.original.toggled.connect(self.render)
         rl.addWidget(QLabel('박스: 드래그 / 영역 클릭 · 브러시: 문지르기 · Ctrl+Z: 취소 · ← / →: 이전 / 다음 그림'))
         splitter.addWidget(right); splitter.setSizes([580,820])
+        splitter.handle(1).setCursor(Qt.CursorShape.SizeHorCursor)
+        splitter.handle(1).setToolTip('좌우로 드래그해서 썸네일과 미리보기 너비 조절')
         self.progress=QProgressBar(); self.progress.hide(); layout.addWidget(self.progress)
         self.status=QLabel('원본을 보존하며, 결과 파일에는 메타데이터를 저장하지 않습니다.'); layout.addWidget(self.status)
         self.list.dropped.connect(self.add_paths); self.list.currentItemChanged.connect(self.selection_changed)
@@ -325,7 +346,9 @@ class Window(QMainWindow):
     def renumber(self):
         for i in range(self.list.count()):
             item=self.list.item(i); entry=self.entries[item.data(Qt.ItemDataRole.UserRole)]
-            item.setText(f'{i+1:03d}  '+Path(entry['path']).name+('  ●' if entry['regions'] else ''))
+            item.setText(f'{i+1:03d}  '+Path(entry['path']).name)
+            item.setData(MOSAIC_ROLE,bool(entry['regions']))
+            item.setToolTip(entry['path']+(f'\n모자이크 적용 · {len(entry["regions"])}개 영역' if entry['regions'] else '\n모자이크 없음'))
         self.status.setText(f'총 {self.list.count()}장 · 모자이크 {sum(bool(e["regions"]) for e in self.entries.values())}장')
     def order_changed(self):self.dirty=True; self.renumber()
     def remove_selected(self):
