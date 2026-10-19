@@ -219,7 +219,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.7'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.8'); self.resize(1400,900)
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.dirty=False; self.project=None
         self.pool=QThreadPool(self); self.pool.setMaxThreadCount(4)
         self.preview_pool=QThreadPool(self); self.preview_pool.setMaxThreadCount(2)
@@ -528,12 +528,20 @@ class Window(QMainWindow):
         if not self.entries or self.busy:return
         folder=QFileDialog.getExistingDirectory(self,'결과를 저장할 상위 폴더')
         if not folder:return
-        stem,accepted=QInputDialog.getText(self,'출력 폴더 이름','공통 이름 (예: a → a_cen / a_uncen):',text='a')
+        stem,accepted=QInputDialog.getText(self,'출력 폴더 이름','폴더 이름 (예: a → a/a_cen, a/a_uncen, a/a_main):',text='a')
         if not accepted:return
         stem=stem.strip()
         if not stem or stem in {'.','..'} or any(c in stem for c in '<>:"/\\|?*') or stem.endswith('.'):
             QMessageBox.warning(self,'폴더 이름','사용할 수 없는 폴더 이름입니다.');return
-        destination=Path(folder)/('Photo_'+time.strftime('%Y%m%d_%H%M%S')+'_'+uuid.uuid4().hex[:6]); destination.mkdir()
+        reserved={'CON','PRN','AUX','NUL'}|{f'COM{i}' for i in range(1,10)}|{f'LPT{i}' for i in range(1,10)}
+        if stem.split('.')[0].upper() in reserved or any(ord(c)<32 for c in stem):
+            QMessageBox.warning(self,'폴더 이름','사용할 수 없는 폴더 이름입니다.');return
+        destination=Path(folder)/stem
+        try:destination.mkdir()
+        except FileExistsError:
+            QMessageBox.warning(self,'폴더가 이미 있습니다',f'{destination}\n다른 이름을 입력하거나 다른 저장 위치를 선택하세요.');return
+        except OSError as exc:
+            QMessageBox.warning(self,'폴더 생성 실패',str(exc));return
         entries=copy.deepcopy(self.ordered()); fmt=self.format.currentText(); ext={'PNG':'png','WEBP':'webp','JPEG':'jpg'}[fmt]
         self.busy=True; self.export_button.setEnabled(False); self.progress.setRange(0,len(entries)); self.progress.setValue(0); self.progress.show(); self.errors=[]; self.exported_main=0
         self.export_next(entries,0,destination,fmt,ext,stem)

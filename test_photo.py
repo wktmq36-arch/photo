@@ -290,13 +290,19 @@ class Tests(unittest.TestCase):
     w.export();deadline=time.monotonic()+15
     while (w.busy or w.jobs) and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
     self.assertFalse(w.busy);self.assertFalse(w.errors)
-   output=next(Path(d).glob('Photo_*'))
+   output=Path(d)/'a'
+   self.assertTrue(output.is_dir())
+   self.assertFalse(list(Path(d).glob('Photo_*')))
    self.assertEqual([p.name for p in (output/'a_main').iterdir()],['002.png'])
    self.assertEqual((output/'a_main/002.png').read_bytes(),(output/'a_cen/002.png').read_bytes())
    with Image.open(output/'a_main/002.png') as main_image:self.assertFalse(main_image.getexif())
    for folder,ext in [('a_cen','png'),('a_uncen','webp')]:
     self.assertEqual(len(list((output/folder).iterdir())),2)
     with Image.open(output/folder/('001.'+ext)) as im:self.assertEqual(im.getpixel((0,0))[:3],(0,0,255))
+   with patch('main.QFileDialog.getExistingDirectory',return_value=d),patch('main.QInputDialog.getText',return_value=('a',True)),patch('main.QMessageBox.warning') as warning:
+    before=(output/'a_cen/001.png').read_bytes();w.export()
+    warning.assert_called_once();self.assertFalse(w.busy)
+    self.assertEqual((output/'a_cen/001.png').read_bytes(),before)
    w.dirty=False;w.close()
  def test_main_checkbox_persists_and_undoes(self):
   from unittest.mock import patch
