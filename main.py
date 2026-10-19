@@ -6,6 +6,7 @@ from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKey
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem,
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
     QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit)
+from exporting import prepare_output
 from imaging import EXTENSIONS, read_pixels, render_regions, export_image, export_pair
 
 def to_qimage(image):
@@ -219,7 +220,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.9'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.11'); self.resize(1400,900)
         self.settings=QSettings('PhotoOrganizer','Photo')
         self.export_folder=str(self.settings.value('export/folder',''))
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.dirty=False; self.project=None
@@ -291,7 +292,7 @@ class Window(QMainWindow):
         self.strength.sliderPressed.connect(self.begin_strength_change)
         self.strength.sliderMoved.connect(self.strength.setValue)
         self.strength.actionTriggered.connect(self.strength_action)
-        for key,fn in [('Delete',self.remove_selected),('Ctrl+S',self.save_project),('Ctrl+O',self.load_project),('Right',lambda:self.navigate(1)),('Left',lambda:self.navigate(-1))]:
+        for key,fn in [('Delete',self.remove_selected),('Ctrl+S',self.save_project),('Ctrl+Shift+S',self.save_project_as),('Ctrl+O',self.load_project),('Right',lambda:self.navigate(1)),('Left',lambda:self.navigate(-1))]:
             action=QAction(self); action.setShortcut(QKeySequence(key)); action.triggered.connect(fn); self.addAction(action)
         self.undo_shortcut=QShortcut(QKeySequence.StandardKey.Undo,self)
         self.undo_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
@@ -513,7 +514,13 @@ class Window(QMainWindow):
         if entry and 0<=i<len(entry['regions']):
             self.snapshot(); entry['regions'].pop(i); self.canvas.active=-1; self.render(); self.renumber()
     def save_project(self):
-        path,_=QFileDialog.getSaveFileName(self,'작업 저장',self.project or '작업.photo.json','Photo project (*.photo.json)')
+        if self.project:self.write_project(self.project)
+        else:self.save_project_as()
+    def save_project_as(self):
+        path,_=QFileDialog.getSaveFileName(self,'다른 이름으로 작업 저장',self.project or '작업.photo.json','Photo project (*.photo.json)')
+        if path and not path.lower().endswith('.photo.json'):path+='.photo.json'
+        self.write_project(path)
+    def write_project(self,path):
         if not path:return
         try:
             temp=Path(path+'.tmp'); temp.write_text(json.dumps({'version':1,'images':self.ordered()},ensure_ascii=False,indent=2),encoding='utf-8'); temp.replace(path)
@@ -562,12 +569,12 @@ class Window(QMainWindow):
         if stem.split('.')[0].upper() in reserved or any(ord(c)<32 for c in stem):
             QMessageBox.warning(self,'폴더 이름','사용할 수 없는 폴더 이름입니다.');return
         self.settings.setValue('export/name',stem)
-        destination=Path(folder)/stem
-        try:destination.mkdir()
-        except FileExistsError:
-            QMessageBox.warning(self,'폴더가 이미 있습니다',f'{destination}\n다른 이름을 입력하거나 다른 저장 위치를 선택하세요.');return
-        except OSError as exc:
-            QMessageBox.warning(self,'폴더 생성 실패',str(exc));return
+        try:
+            destination=prepare_output(folder,stem,[entry['path'] for entry in self.entries.values()],
+                lambda path:QMessageBox.warning(self,'기존 출력 내용 삭제',
+                    f'{path}\n이 폴더 안의 기존 파일과 하위 폴더를 모두 삭제하고 새로 내보냅니다.',QMessageBox.StandardButton.Ok))
+        except (OSError,ValueError) as exc:
+            QMessageBox.warning(self,'출력 폴더 준비 실패',str(exc));return
         entries=copy.deepcopy(self.ordered()); fmt=self.format.currentText(); ext={'PNG':'png','WEBP':'webp','JPEG':'jpg'}[fmt]
         self.busy=True; self.export_button.setEnabled(False); self.progress.setRange(0,len(entries)); self.progress.setValue(0); self.progress.show(); self.errors=[]; self.exported_main=0;self.exported_files=0
         self.export_next(entries,0,destination,fmt,ext,stem,outputs)

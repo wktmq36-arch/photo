@@ -306,10 +306,14 @@ class Tests(unittest.TestCase):
    for folder,ext in [('a_cen','png'),('a_uncen','webp')]:
     self.assertEqual(len(list((output/folder).iterdir())),2)
     with Image.open(output/folder/('001.'+ext)) as im:self.assertEqual(im.getpixel((0,0))[:3],(0,0,255))
-   with patch('main.QFileDialog.getExistingDirectory',return_value=d),patch('main.QInputDialog.getText',return_value=('a',True)),patch('main.QMessageBox.warning') as warning:
-    before=(output/'a_cen/001.png').read_bytes();w.export()
+   stale=output/'stale.txt';stale.write_text('old')
+   w.output_checks['uncen'].setChecked(False)
+   with patch('main.QMessageBox.warning') as warning,patch('main.QMessageBox.information'):
+    w.export();deadline=time.monotonic()+10
+    while (w.busy or w.jobs) and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
     warning.assert_called_once();self.assertFalse(w.busy)
-    self.assertEqual((output/'a_cen/001.png').read_bytes(),before)
+   self.assertFalse(stale.exists());self.assertFalse((output/'a_uncen').exists())
+   self.assertTrue((output/'a_cen/001.png').exists())
    w.dirty=False;w.close()
  def test_main_checkbox_persists_and_undoes(self):
   from unittest.mock import patch
@@ -363,4 +367,37 @@ class Tests(unittest.TestCase):
    self.assertTrue(next_window.output_checks['uncen'].isChecked())
    self.assertEqual(next_window.export_name.text(),'second')
    next_window.close()
+ def test_replacing_output_protects_sources_and_parent(self):
+  from exporting import prepare_output
+  from unittest.mock import Mock
+  with tempfile.TemporaryDirectory() as d:
+   parent=Path(d);dest=parent/'a';dest.mkdir();nested=dest/'old';nested.mkdir();(nested/'old.txt').write_text('old')
+   outside=parent/'keep.txt';outside.write_text('keep');notice=Mock()
+   result=prepare_output(parent,'a',[outside],notice)
+   self.assertEqual(result,dest.resolve());notice.assert_called_once_with(result)
+   self.assertEqual(list(dest.iterdir()),[]);self.assertEqual(outside.read_text(),'keep')
+   source=dest/'source.webp';source.write_bytes(b'original');notice.reset_mock()
+   with self.assertRaises(ValueError):prepare_output(parent,'a',[source],notice)
+   self.assertEqual(source.read_bytes(),b'original');notice.assert_not_called()
+   with self.assertRaises(ValueError):prepare_output(parent,'..',[],notice)
+ def test_save_uses_current_project_without_prompt(self):
+  from unittest.mock import patch
+  import json
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   source=Path(d)/'source.png';Image.new('RGB',(80,60),'red').save(source)
+   w=Window();w.add_paths([str(source)]);project=str(Path(d)/'first.photo.json')
+   with patch('main.QFileDialog.getSaveFileName',return_value=(project,'')) as picker:
+    w.save_project();picker.assert_called_once()
+    w.main_check.setChecked(True);w.save_project();picker.assert_called_once()
+   self.assertTrue(json.loads(Path(project).read_text(encoding='utf-8'))['images'][0]['main_selected'])
+   w.dirty=False
+   with patch('main.QFileDialog.getOpenFileName',return_value=(project,'')):w.load_project()
+   with patch('main.QFileDialog.getSaveFileName') as picker:w.save_project();picker.assert_not_called()
+   second=str(Path(d)/'second.photo.json')
+   with patch('main.QFileDialog.getSaveFileName',return_value=(second,'')):w.save_project_as()
+   self.assertEqual(w.project,second);self.assertTrue(Path(second).exists())
+   deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close()
 if __name__=='__main__':unittest.main()
