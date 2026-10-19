@@ -2,7 +2,7 @@ import sys, json, uuid, copy, time
 from pathlib import Path
 from collections import OrderedDict
 from PySide6.QtCore import Qt, QSize, QRectF, Signal, QObject, QRunnable, QThreadPool, QTimer
-from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKeySequence, QFontDatabase, QFont
+from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKeySequence, QFontDatabase, QFont, QShortcut
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem,
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
     QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea)
@@ -118,7 +118,7 @@ class Window(QMainWindow):
         self.canvas=Canvas(); rl.addWidget(self.canvas,1)
         tools=QHBoxLayout(); rl.addLayout(tools)
         tools.addWidget(QLabel('모자이크 강도'))
-        self.strength=QSlider(Qt.Orientation.Horizontal); self.strength.setRange(2,100); self.strength.setValue(20); tools.addWidget(self.strength)
+        self.strength=QSlider(Qt.Orientation.Horizontal); self.strength.setTracking(True); self.strength.setRange(2,100); self.strength.setValue(20); tools.addWidget(self.strength)
         self.value=QLabel('20'); tools.addWidget(self.value)
         delete_region=QPushButton('선택 영역 삭제'); tools.addWidget(delete_region); delete_region.clicked.connect(self.remove_region)
         self.original=QPushButton('원본 비교'); self.original.setCheckable(True); tools.addWidget(self.original); self.original.toggled.connect(self.render)
@@ -129,10 +129,14 @@ class Window(QMainWindow):
         self.list.dropped.connect(self.add_paths); self.list.currentItemChanged.connect(self.selection_changed)
         self.list.reordering.connect(self.snapshot); self.list.reordered.connect(self.order_changed); self.canvas.selected.connect(self.region_event)
         self.strength.valueChanged.connect(self.strength_changed)
-        self.strength.sliderPressed.connect(self.snapshot)
+        self.strength.sliderPressed.connect(self.begin_strength_change)
+        self.strength.sliderMoved.connect(self.strength.setValue)
         self.strength.actionTriggered.connect(self.strength_action)
-        for key,fn in [('Delete',self.remove_selected),('Ctrl+Z',self.undo),('Ctrl+S',self.save_project),('Ctrl+O',self.load_project),('Right',lambda:self.navigate(1)),('Left',lambda:self.navigate(-1))]:
+        for key,fn in [('Delete',self.remove_selected),('Ctrl+S',self.save_project),('Ctrl+O',self.load_project),('Right',lambda:self.navigate(1)),('Left',lambda:self.navigate(-1))]:
             action=QAction(self); action.setShortcut(QKeySequence(key)); action.triggered.connect(fn); self.addAction(action)
+        self.undo_shortcut=QShortcut(QKeySequence.StandardKey.Undo,self)
+        self.undo_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.undo_shortcut.activated.connect(self.undo)
         self.setAcceptDrops(True)
     def run_job(self,pool,fn,callback,priority=0):
         job=Job(fn,lambda result:self.job_done(job,callback,result)); self.jobs.add(job); pool.start(job,priority)
@@ -146,10 +150,28 @@ class Window(QMainWindow):
     def current(self):
         item=self.list.currentItem(); return self.entries.get(item.data(Qt.ItemDataRole.UserRole)) if item else None
     def snapshot(self):
-        self.history.append(copy.deepcopy(self.ordered())); self.history=self.history[-30:]; self.dirty=True
+        entry=self.current()
+        self.history.append((copy.deepcopy(self.ordered()),entry['id'] if entry else None,self.canvas.active))
+        self.history=self.history[-30:]; self.dirty=True
     def undo(self):
         if not self.history: return
-        state=self.history.pop(); self.populate(state); self.dirty=True
+        state,current_id,active=self.history.pop()
+        # Editing a region does not require reloading every thumbnail.
+        if [e['id'] for e in state]==[e['id'] for e in self.ordered()]:
+            self.entries={e['id']:e for e in state}
+        else:
+            self.populate(state)
+        for row in range(self.list.count()):
+            if self.list.item(row).data(Qt.ItemDataRole.UserRole)==current_id:
+                self.list.setCurrentRow(row); break
+        entry=self.current()
+        self.canvas.active=min(active,len(entry['regions'])-1) if entry else -1
+        if entry and self.canvas.active>=0:
+            self.strength.blockSignals(True)
+            self.strength.setValue(entry['regions'][self.canvas.active]['strength'])
+            self.strength.blockSignals(False)
+            self.value.setText(str(self.strength.value()))
+        self.original.setChecked(False); self.render(); self.renumber(); self.dirty=True
     def populate(self,entries):
         self.list.clear(); self.entries={}
         for entry in entries: self.insert_entry(entry)
@@ -253,8 +275,11 @@ class Window(QMainWindow):
             if event[1]>=0:
                 self.strength.blockSignals(True); self.strength.setValue(entry['regions'][event[1]]['strength']); self.strength.blockSignals(False); self.value.setText(str(self.strength.value()))
         self.render(); self.renumber()
+    def begin_strength_change(self):
+        entry=self.current()
+        if entry and 0<=self.canvas.active<len(entry['regions']):self.snapshot()
     def strength_action(self,*args):
-        if not self.strength.isSliderDown(): self.snapshot()
+        if not self.strength.isSliderDown(): self.begin_strength_change()
     def strength_changed(self,value):
         self.value.setText(str(value)); entry=self.current(); i=self.canvas.active
         if entry and 0<=i<len(entry['regions']):entry['regions'][i]['strength']=value; self.dirty=True; self.render()

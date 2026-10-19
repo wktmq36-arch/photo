@@ -29,4 +29,29 @@ class Tests(unittest.TestCase):
    w.remove_selected(); self.assertEqual(w.list.count(),299); w.undo(); self.assertEqual(w.list.count(),300)
    while w.jobs and time.monotonic()<deadline:app.processEvents(); time.sleep(.001)
    w.dirty=False; w.close()
+ def test_live_slider_and_keyboard_undo(self):
+  from PySide6.QtCore import Qt
+  from PySide6.QtTest import QTest
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths=[]
+   for i in range(2):
+    p=Path(d)/f'image{i}.webp'; Image.effect_noise((800,600),100).convert('RGB').save(p); paths.append(str(p))
+   w=Window(); w.show(); w.activateWindow(); w.add_paths(paths); w.list.setCurrentRow(1)
+   deadline=time.monotonic()+15
+   while w.jobs and time.monotonic()<deadline:app.processEvents(); time.sleep(.001)
+   w.region_event(('add',[.1,.1,.8,.8])); before=w.canvas.pixmap.toImage()
+   w.strength.setFocus(); w.strength.setSliderDown(True); w.strength.setSliderPosition(80)
+   app.processEvents()
+   self.assertTrue(w.strength.isSliderDown())
+   self.assertEqual(w.current()['regions'][0]['strength'],80)
+   self.assertNotEqual(before,w.canvas.pixmap.toImage())
+   w.strength.setSliderDown(False)
+   QTest.keyClick(w.strength,Qt.Key.Key_Z,Qt.KeyboardModifier.ControlModifier); app.processEvents()
+   self.assertEqual(w.list.currentRow(),1)
+   self.assertEqual(w.current()['regions'][0]['strength'],20)
+   QTest.keyClick(w.strength,Qt.Key.Key_Z,Qt.KeyboardModifier.ControlModifier); app.processEvents()
+   self.assertFalse(w.current()['regions'])
+   self.assertEqual(w.list.currentRow(),1)
+   w.dirty=False; w.close()
 if __name__=='__main__':unittest.main()
