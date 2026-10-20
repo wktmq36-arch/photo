@@ -829,4 +829,18 @@ class Tests(unittest.TestCase):
     self.assertAlmostEqual(w.canvas.pan.x()-old.x(),40);self.assertAlmostEqual(w.canvas.pan.y()-old.y(),25)
     self.assertFalse(w.current()['regions']);self.assertFalse(w.current()['clones']);self.assertEqual(len(w.history),history)
    w.dirty=False;w.close()
+ def test_lower_panel_drag_and_restart_layout(self):
+  from PySide6.QtCore import Qt,QPoint
+  from PySide6.QtTest import QTest
+  app=QApplication.instance() or QApplication([])
+  w=Window();w.show();app.processEvents();splitter=w.preview_splitter
+  before=splitter.sizes()[0];handle=splitter.handle(1);center=handle.rect().center()
+  QTest.mousePress(handle,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,center)
+  QTest.mouseMove(handle,center+QPoint(0,-70),40);app.processEvents()
+  QTest.mouseRelease(handle,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,handle.rect().center());app.processEvents()
+  self.assertLess(splitter.sizes()[0],before-30)
+  ratio=splitter.sizes()[0]/sum(splitter.sizes());w.close()
+  reopened=Window();reopened.show();app.processEvents()
+  self.assertAlmostEqual(ratio,reopened.preview_splitter.sizes()[0]/sum(reopened.preview_splitter.sizes()),delta=.04)
+  reopened.close()
 if __name__=='__main__':unittest.main()
