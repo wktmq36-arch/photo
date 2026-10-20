@@ -7,10 +7,10 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, 
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
     QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu, QDockWidget, QToolButton, QButtonGroup)
 from exporting import prepare_output
-from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, export_image, export_pair
+from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, render_clones, ClonePreview, export_image, export_pair
 
 def to_qimage(image):
-    rgba = image.convert('RGBA')
+    rgba = image if image.mode=='RGBA' else image.convert('RGBA')
     return QImage(rgba.tobytes(), rgba.width, rgba.height, rgba.width * 4,
                   QImage.Format.Format_RGBA8888).copy()
 
@@ -323,7 +323,7 @@ class Canvas(QWidget):
         if self.start is not None and self.end is not None:
             p.setPen(QPen(QColor('#ffffff'),2,Qt.PenStyle.DashLine)); p.drawRect(QRectF(self.start,self.end).normalized())
     def mousePressEvent(self,event):
-        if self.pixmap and event.button()==Qt.MouseButton.MiddleButton:
+        if self.pixmap and (event.button()==Qt.MouseButton.MiddleButton or (event.button()==Qt.MouseButton.LeftButton and event.modifiers() & Qt.KeyboardModifier.ControlModifier)):
             self.pan_start=event.position();self.setCursor(Qt.CursorShape.ClosedHandCursor);event.accept();return
         if self.pixmap and self.tool=='clone' and event.button()==Qt.MouseButton.LeftButton and self.target.contains(event.position()):
             if event.modifiers() & Qt.KeyboardModifier.AltModifier:
@@ -349,10 +349,10 @@ class Canvas(QWidget):
             return
         if self.start is not None: self.end=event.position(); self.update()
     def mouseReleaseEvent(self,event):
-        if event.button()==Qt.MouseButton.MiddleButton:
+        if event.button()==Qt.MouseButton.MiddleButton or (self.pan_start is not None and event.button()==Qt.MouseButton.LeftButton):
             self.pan_start=None;self.unsetCursor();event.accept();return
         if self.drawing_clone:
-            self.stroke.append(self.normalized(event.position()));self.selected.emit(('clone_move',self.stroke.copy()));self.drawing_clone=False;return
+            self.stroke.append(self.normalized(event.position()));self.drawing_clone=False;self.selected.emit(('clone_end',self.stroke.copy()));return
         if self.drawing_brush:
             self.stroke.append(self.normalized(event.position()))
             self.selected.emit(('brush_move',self.stroke.copy()))
@@ -368,7 +368,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.26'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.28'); self.resize(1400,900)
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
         self.tool_sizes={name:max(5,min(200,self.settings.value('tools/sizes/'+name,legacy_size,type=int))) for name in ['box','brush','clone']}
@@ -378,6 +378,8 @@ class Window(QMainWindow):
         if not isinstance(self.recent_projects,list):self.recent_projects=[]
         self.recent_projects=[path for path in self.recent_projects if isinstance(path,str)]
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.history_labels=[]; self.redo_stack=[]; self.dirty=False; self.project=None
+        self.clone_cache_key=None;self.clone_cache_image=None;self.clone_live=None;self.clone_live_entry=None
+        self.clone_timer=QTimer(self);self.clone_timer.setSingleShot(True);self.clone_timer.timeout.connect(self.flush_clone_preview)
         self.thumb_cache=OrderedDict();self.thumb_waiters={};self.thumb_cache_bytes=0
         self.pool=QThreadPool(self); self.pool.setMaxThreadCount(4)
         self.preview_pool=QThreadPool(self); self.preview_pool.setMaxThreadCount(2)
@@ -441,7 +443,7 @@ class Window(QMainWindow):
         fit_button=QPushButton('화면에 맞춤');fit_button.clicked.connect(self.canvas.reset_view);view_controls.addWidget(fit_button)
         self.zoom_label=QLabel('100%');view_controls.addWidget(self.zoom_label)
         self.canvas.zoomChanged.connect(lambda zoom:self.zoom_label.setText(f'{zoom*100:.0f}%'))
-        view_controls.addWidget(QLabel('휠: 확대/축소 · 가운데 버튼 드래그: 화면 이동'));view_controls.addStretch()
+        view_controls.addWidget(QLabel('휠: 확대/축소 · Ctrl+드래그 또는 휠버튼 드래그: 이동'));view_controls.addStretch()
         brush_tools=QHBoxLayout(); rl.addLayout(brush_tools)
         brush_tools.addWidget(QLabel('도구'))
         self.tool=ToolPicker(); brush_tools.addWidget(self.tool)
@@ -578,6 +580,8 @@ class Window(QMainWindow):
         self.restore_state(state);self.update_history_controls()
         self.status.setText('다시 실행: '+label)
     def restore_state(self,snapshot):
+        self.clone_timer.stop();self.clone_live=None;self.clone_live_entry=None
+        self.clone_cache_key=None;self.clone_cache_image=None
         state,current_id,active=snapshot
         # Editing a region does not require reloading every thumbnail.
         if [e['id'] for e in state]==[e['id'] for e in self.ordered()]:
@@ -738,6 +742,8 @@ class Window(QMainWindow):
         self.snapshot('메인 지정' if checked else '메인 해제');entry['main_selected']=checked;self.renumber()
         self.list.setFocus(Qt.FocusReason.OtherFocusReason)
     def selection_changed(self,*args):
+        self.clone_timer.stop();self.clone_live=None;self.clone_live_entry=None
+        self.clone_cache_key=None;self.clone_cache_image=None
         self.sync_main_check()
         self.canvas.reset_view()
         self.canvas.clone_source=None;self.canvas.drawing_clone=False
@@ -772,12 +778,31 @@ class Window(QMainWindow):
         if entry and entry['path']==path:
             if result[0]:self.render()
             else:self.title.setText('읽기 실패: '+result[1])
+    def clone_key(self,entry,image):
+        return (id(entry),id(image),len(entry.get('clones',[])))
+    def committed_clones(self,entry,image):
+        key=self.clone_key(entry,image)
+        if key!=self.clone_cache_key:
+            self.clone_cache_image=render_clones(image,entry.get('clones',[]));self.clone_cache_key=key
+        return self.clone_cache_image
+    def flush_clone_preview(self,finish=False):
+        entry=self.current()
+        if self.clone_live is None or entry is not self.clone_live_entry:return
+        self.clone_timer.stop()
+        self.clone_live.update(entry['clones'][-1]['points'])
+        if finish:
+            image=self.cache.get(entry['path'])
+            self.clone_cache_image=self.clone_live.result;self.clone_cache_key=self.clone_key(entry,image)
+            self.clone_live=None;self.clone_live_entry=None
+        self.render()
     def render(self,*args):
         self.sync_main_check()
         entry=self.current()
         if not entry or entry['path'] not in self.cache:return
         image=self.cache[entry['path']]
-        image=image if self.original.isChecked() else render_entry(image,entry)
+        if not self.original.isChecked():
+            cloned=self.clone_live.result if self.clone_live is not None and entry is self.clone_live_entry else self.committed_clones(entry,image)
+            image=render_regions(cloned,entry['regions']) if entry['regions'] else cloned
         self.canvas.pixmap=QPixmap.fromImage(to_qimage(image))
         self.canvas.regions=[] if self.original.isChecked() else entry['regions']; self.canvas.update()
     def region_event(self,event):
@@ -788,10 +813,20 @@ class Window(QMainWindow):
         if event[0]=='clone_source':
             self.status.setText('도장 기준점 선택 완료 · 지울 부위를 드래그하세요.');return
         if event[0]=='clone_start':
-            self.snapshot('복제 도장');entry.setdefault('clones',[]).append(event[1]);self.canvas.active=-1
-        elif event[0]=='clone_move':
+            image=self.cache.get(entry['path'])
+            if image is None:return
+            self.snapshot('복제 도장')
+            base=self.committed_clones(entry,image)
+            entry.setdefault('clones',[]).append(event[1]);self.canvas.active=-1
+            self.clone_live=ClonePreview(base,event[1]);self.clone_live_entry=entry
+            self.clone_live.update(event[1]['points'])
+        elif event[0] in ('clone_move','clone_end'):
             if not entry.get('clones'):return
             entry['clones'][-1]['points']=event[1]
+            if self.clone_live is not None and entry is self.clone_live_entry:
+                if event[0]=='clone_end':self.flush_clone_preview(True)
+                elif not self.clone_timer.isActive():self.clone_timer.start(16)
+                return
         elif event[0]=='brush_start':
             self.snapshot('브러시 모자이크 추가')
             region={'kind':'brush','points':event[1]['points'],'radius':event[1]['radius'],'strength':self.strength.value()}

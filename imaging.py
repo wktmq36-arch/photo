@@ -36,30 +36,77 @@ def render_regions(image, regions):
         result.paste(mosaic, box, mask)
     return result
 
+def clone_bounds(points,radius,sigma,size):
+    pad=math.ceil(radius+sigma*4+3)
+    return (max(0,math.floor(min(x for x,y in points))-pad),
+            max(0,math.floor(min(y for x,y in points))-pad),
+            min(size[0],math.ceil(max(x for x,y in points))+pad+1),
+            min(size[1],math.ceil(max(y for x,y in points))+pad+1))
+
+def draw_clone_mask(mask,points,radius,origin=(0,0)):
+    draw=ImageDraw.Draw(mask)
+    line=[(math.floor(x)-origin[0],math.floor(y)-origin[1]) for x,y in points]
+    for first,second in zip(line,line[1:]):draw.line([first,second],fill=255,width=max(1,round(radius*2)))
+    for x,y in points:
+        draw.ellipse((math.floor(x-radius)-origin[0],math.floor(y-radius)-origin[1],
+                      math.floor(x+radius)-origin[0],math.floor(y+radius)-origin[1]),fill=255)
+
+def clone_patch(base,mask,box,dx,dy,sigma):
+    if sigma>0:mask=mask.filter(ImageFilter.GaussianBlur(sigma))
+    valid=Image.new('L',mask.size,0)
+    left,top=max(box[0],dx),max(box[1],dy)
+    right,bottom=min(box[2],base.width+dx),min(box[3],base.height+dy)
+    if left<right and top<bottom:
+        ImageDraw.Draw(valid).rectangle((left-box[0],top-box[1],right-box[0]-1,bottom-box[1]-1),fill=255)
+    shifted=base.crop((box[0]-dx,box[1]-dy,box[2]-dx,box[3]-dy))
+    return Image.composite(shifted,base.crop(box),ImageChops.multiply(mask,valid))
+
 def render_clones(image, strokes):
+    if not strokes:return image
     result=image.copy();width,height=image.size
     for stroke in strokes:
         points=[(x*width,y*height) for x,y in stroke['points']]
         if not points:continue
-        radius=max(1,stroke['radius']*width)
-        mask=Image.new('L',image.size,0);draw=ImageDraw.Draw(mask)
-        if len(points)>1:draw.line(points,fill=255,width=max(1,round(radius*2)))
-        for x,y in points:draw.ellipse((x-radius,y-radius,x+radius,y+radius),fill=255)
-        softness=stroke.get('softness',.5)
-        if softness>0:mask=mask.filter(ImageFilter.GaussianBlur(radius*softness*.45))
-        dx=round(points[0][0]-stroke['source'][0]*width)
-        dy=round(points[0][1]-stroke['source'][1]*height)
-        shifted=Image.new('RGBA',image.size,(0,0,0,0));shifted.paste(result,(dx,dy))
-        valid=Image.new('L',image.size,0)
-        left,top=max(0,dx),max(0,dy);right,bottom=min(width,width+dx),min(height,height+dy)
-        if left>=right or top>=bottom:continue
-        ImageDraw.Draw(valid).rectangle((left,top,right-1,bottom-1),fill=255)
-        result=Image.composite(shifted,result,ImageChops.multiply(mask,valid))
+        radius=max(1,stroke['radius']*width);sigma=radius*stroke.get('softness',.5)*.45
+        box=clone_bounds(points,radius,sigma,image.size)
+        mask=Image.new('L',(box[2]-box[0],box[3]-box[1]),0)
+        draw_clone_mask(mask,points,radius,box[:2])
+        dx=round((stroke['points'][0][0]-stroke['source'][0])*width);dy=round((stroke['points'][0][1]-stroke['source'][1])*height)
+        result.paste(clone_patch(result,mask,box,dx,dy,sigma),box)
     return result
+
+class ClonePreview:
+    """Incremental current-stroke preview; its source stays fixed during a stroke."""
+    def __init__(self,base,stroke):
+        self.base=base;self.result=base.copy();self.stroke=stroke
+        self.mask=Image.new('L',base.size,0);self.count=0
+        self.radius=max(1,stroke['radius']*base.width)
+        self.sigma=self.radius*stroke.get('softness',.5)*.45
+        first=stroke['points'][0]
+        self.dx=round((first[0]-stroke['source'][0])*base.width)
+        self.dy=round((first[1]-stroke['source'][1])*base.height)
+    def update(self,points):
+        if len(points)<=self.count:return self.result
+        tail=points[max(0,self.count-1):]
+        pixels=[(x*self.base.width,y*self.base.height) for x,y in tail]
+        draw_clone_mask(self.mask,pixels,self.radius)
+        box=clone_bounds(pixels,self.radius,self.sigma,self.base.size)
+        if self.sigma>0:
+            # Blur with a surrounding margin, then update only the interior.
+            # Otherwise crop-edge padding would change previously painted pixels.
+            margin=math.ceil(self.sigma*4+3)
+            outer=(max(0,box[0]-margin),max(0,box[1]-margin),min(self.base.width,box[2]+margin),min(self.base.height,box[3]+margin))
+            blurred=self.mask.crop(outer).filter(ImageFilter.GaussianBlur(self.sigma))
+            local=blurred.crop((box[0]-outer[0],box[1]-outer[1],box[2]-outer[0],box[3]-outer[1]))
+        else:local=self.mask.crop(box)
+        patch=clone_patch(self.base,local,box,self.dx,self.dy,0)
+        self.result.paste(patch,box);self.count=len(points)
+        return self.result
 
 def render_entry(image,entry):
     # Retouch first; censor last, so a clone can never undo a mosaic.
-    return render_regions(render_clones(image,entry.get('clones',[])),entry['regions'])
+    cloned=render_clones(image,entry.get('clones',[]))
+    return render_regions(cloned,entry['regions']) if entry['regions'] else cloned
 
 def export_image(entry, destination, fmt):
     result = render_entry(read_pixels(entry['path']), entry)

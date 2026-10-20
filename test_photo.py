@@ -779,4 +779,54 @@ class Tests(unittest.TestCase):
    w.region_event(('add',[.2,.2,.8,.8]));self.assertFalse(w.redo_stack);self.assertFalse(w.redo_button.isEnabled())
    while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
    w.dirty=False;w.close()
+ def test_incremental_clone_matches_final_soft_edges(self):
+  from imaging import ClonePreview,render_clones
+  image=Image.effect_noise((480,360),60).convert('RGBA')
+  for softness in [0,.5,1]:
+   stroke={'source':[.02,.05],'points':[[.4,.4]],'radius':.05,'softness':softness}
+   preview=ClonePreview(image,stroke);points=[[.4,.4]]
+   for i in range(80):
+    points.append([.4+i*.003,.4+(.04 if i%3 else -.03)])
+    preview.update(points)
+   stroke['points']=points
+   self.assertEqual(preview.result.tobytes(),render_clones(image,[stroke]).tobytes())
+ def test_clone_drag_does_not_replay_committed_strokes(self):
+  from unittest.mock import patch
+  from imaging import render_clones,render_entry
+  from main import to_qimage
+  from PySide6.QtGui import QImage
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'clone.png';Image.effect_noise((800,600),60).convert('RGB').save(path)
+   w=Window();w.add_paths([str(path)]);deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.current()['clones']=[{'source':[.1,.1],'points':[[.2,.2+i*.01],[.25,.2+i*.01]],'radius':.02,'softness':.5} for i in range(20)]
+   w.render()
+   with patch('main.render_clones',wraps=render_clones) as replay,patch.object(w,'renumber',wraps=w.renumber) as renumber:
+    w.region_event(('clone_start',{'source':[.2,.2],'points':[[.5,.5]],'radius':.025,'softness':.5}))
+    count=replay.call_count
+    points=[[.5,.5]]
+    for i in range(60):
+     points.append([.5+i*.002,.5+i*.001]);w.region_event(('clone_move',points.copy()));w.flush_clone_preview()
+    w.region_event(('clone_end',points.copy()))
+    self.assertEqual(replay.call_count,count);self.assertEqual(renumber.call_count,1)
+   expected=to_qimage(render_entry(w.cache[str(path)],w.current()))
+   self.assertEqual(w.canvas.pixmap.toImage().convertToFormat(QImage.Format.Format_RGBA8888),expected)
+   w.dirty=False;w.close()
+ def test_ctrl_drag_pans_without_editing_for_all_tools(self):
+  from PySide6.QtCore import Qt,QPoint,QPointF
+  from PySide6.QtTest import QTest
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'pan.png';Image.new('RGB',(400,400),'red').save(path)
+   w=Window();w.show();w.add_paths([str(path)]);deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.canvas.zoom=2;w.canvas.update_target()
+   for index in range(3):
+    w.tool.setCurrentIndex(index);old=QPointF(w.canvas.pan);history=len(w.history);start=w.canvas.rect().center()
+    QTest.mousePress(w.canvas,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.ControlModifier,start)
+    QTest.mouseMove(w.canvas,start+QPoint(40,25));QTest.mouseRelease(w.canvas,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,start+QPoint(40,25))
+    self.assertAlmostEqual(w.canvas.pan.x()-old.x(),40);self.assertAlmostEqual(w.canvas.pan.y()-old.y(),25)
+    self.assertFalse(w.current()['regions']);self.assertFalse(w.current()['clones']);self.assertEqual(len(w.history),history)
+   w.dirty=False;w.close()
 if __name__=='__main__':unittest.main()
