@@ -24,7 +24,7 @@ def prepare_output(parent, name, sources, notify):
         for child in children:
             if not child.resolve().is_relative_to(destination):
                 raise ValueError('출력 폴더 외부로 연결된 항목이 있어 비울 수 없습니다.')
-        notify(destination)
+        if not notify(destination):return None
         for child in children:
             if child.is_symlink():child.unlink()
             elif child.is_dir():shutil.rmtree(child)

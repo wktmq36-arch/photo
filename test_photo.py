@@ -308,7 +308,8 @@ class Tests(unittest.TestCase):
     with Image.open(output/folder/('001.'+ext)) as im:self.assertEqual(im.getpixel((0,0))[:3],(0,0,255))
    stale=output/'stale.txt';stale.write_text('old')
    w.output_checks['uncen'].setChecked(False)
-   with patch('main.QMessageBox.warning') as warning,patch('main.QMessageBox.information'):
+   from PySide6.QtWidgets import QMessageBox
+   with patch('main.QMessageBox.exec',return_value=QMessageBox.StandardButton.Yes) as warning,patch('main.QMessageBox.information'):
     w.export();deadline=time.monotonic()+10
     while (w.busy or w.jobs) and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
     warning.assert_called_once();self.assertFalse(w.busy)
@@ -372,7 +373,7 @@ class Tests(unittest.TestCase):
   from unittest.mock import Mock
   with tempfile.TemporaryDirectory() as d:
    parent=Path(d);dest=parent/'a';dest.mkdir();nested=dest/'old';nested.mkdir();(nested/'old.txt').write_text('old')
-   outside=parent/'keep.txt';outside.write_text('keep');notice=Mock()
+   outside=parent/'keep.txt';outside.write_text('keep');notice=Mock(return_value=True)
    result=prepare_output(parent,'a',[outside],notice)
    self.assertEqual(result,dest.resolve());notice.assert_called_once_with(result)
    self.assertEqual(list(dest.iterdir()),[]);self.assertEqual(outside.read_text(),'keep')
@@ -843,4 +844,24 @@ class Tests(unittest.TestCase):
   reopened=Window();reopened.show();app.processEvents()
   self.assertAlmostEqual(ratio,reopened.preview_splitter.sizes()[0]/sum(reopened.preview_splitter.sizes()),delta=.04)
   reopened.close()
+ def test_declining_export_replacement_keeps_existing_files(self):
+  from exporting import prepare_output
+  from unittest.mock import Mock,patch
+  from PySide6.QtWidgets import QMessageBox
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d);dest=root/'a';dest.mkdir();nested=dest/'a_cen';nested.mkdir();old=nested/'001.png';old.write_bytes(b'keep existing')
+   notify=Mock(return_value=False)
+   self.assertIsNone(prepare_output(root,'a',[],notify));notify.assert_called_once()
+   self.assertEqual(old.read_bytes(),b'keep existing')
+   source=root/'source.png';Image.new('RGB',(80,60),'red').save(source)
+   w=Window();w.add_paths([str(source)]);w.export_folder=d
+   for answer in [QMessageBox.StandardButton.No,0]:
+    with patch('main.QMessageBox.exec',return_value=answer) as question:
+     w.export();question.assert_called_once()
+    self.assertFalse(w.busy);self.assertEqual(old.read_bytes(),b'keep existing')
+   with patch('main.QMessageBox.exec',return_value=QMessageBox.StandardButton.No):self.assertFalse(w.confirm_output_replacement(dest))
+   deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close()
 if __name__=='__main__':unittest.main()

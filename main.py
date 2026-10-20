@@ -368,7 +368,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.29'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.30'); self.resize(1400,900)
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
         self.tool_sizes={name:max(5,min(200,self.settings.value('tools/sizes/'+name,legacy_size,type=int))) for name in ['box','brush','clone']}
@@ -956,6 +956,13 @@ class Window(QMainWindow):
         self.export_folder=folder;self.settings.setValue('export/folder',folder)
         self.export_folder_label.setText(folder);self.export_folder_label.setToolTip(folder)
         return True
+    def confirm_output_replacement(self,path):
+        buttons=QMessageBox.StandardButton
+        box=QMessageBox(QMessageBox.Icon.Warning,'기존 출력 내용 삭제',
+            f'{path}\n이 폴더 안의 기존 파일과 하위 폴더를 모두 삭제하고 새로 내보낼까요?',buttons.Yes|buttons.No,self)
+        box.button(buttons.Yes).setText('예');box.button(buttons.No).setText('아니오')
+        box.setDefaultButton(buttons.No);box.setEscapeButton(buttons.No)
+        return box.exec()==buttons.Yes
     def export(self):
         if not self.entries or self.busy:return
         outputs={key:check.isChecked() for key,check in self.output_checks.items()}
@@ -975,9 +982,9 @@ class Window(QMainWindow):
             QMessageBox.warning(self,'폴더 이름','사용할 수 없는 폴더 이름입니다.');return
         self.settings.setValue('export/name',stem)
         try:
-            destination=prepare_output(folder,stem,[entry['path'] for entry in self.entries.values()],
-                lambda path:QMessageBox.warning(self,'기존 출력 내용 삭제',
-                    f'{path}\n이 폴더 안의 기존 파일과 하위 폴더를 모두 삭제하고 새로 내보냅니다.',QMessageBox.StandardButton.Ok))
+            destination=prepare_output(folder,stem,[entry['path'] for entry in self.entries.values()],self.confirm_output_replacement)
+            if destination is None:
+                self.status.setText('내보내기를 취소했습니다. 기존 파일은 유지됩니다.');return
         except (OSError,ValueError) as exc:
             QMessageBox.warning(self,'출력 폴더 준비 실패',str(exc));return
         entries=copy.deepcopy(self.ordered()); fmt=self.format.currentText(); ext={'PNG':'png','WEBP':'webp','JPEG':'jpg'}[fmt]
