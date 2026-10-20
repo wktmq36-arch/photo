@@ -724,4 +724,15 @@ class Tests(unittest.TestCase):
    with patch('main.QMessageBox.warning') as warning:
     self.assertFalse(reopened.open_project(str(Path(d)/'missing.photo.json')));warning.assert_called_once()
    self.assertIsNone(reopened.project);reopened.close()
+ def test_each_tool_keeps_its_own_brush_size(self):
+  app=QApplication.instance() or QApplication([])
+  w=Window()
+  for index,size in [(0,25),(1,90),(2,15)]:w.tool.setCurrentIndex(index);w.brush_size.setValue(size)
+  for index,size in [(1,90),(0,25),(2,15),(1,90)]:
+   w.tool.setCurrentIndex(index);self.assertEqual(w.brush_size.value(),size)
+   self.assertAlmostEqual(w.canvas.brush_radius,size/2000)
+  w.close();reopened=Window()
+  self.assertEqual(reopened.tool.currentIndex(),1);self.assertEqual(reopened.brush_size.value(),90)
+  reopened.tool.setCurrentIndex(2);self.assertEqual(reopened.brush_size.value(),15)
+  reopened.tool.setCurrentIndex(0);self.assertEqual(reopened.brush_size.value(),25);reopened.close()
 if __name__=='__main__':unittest.main()

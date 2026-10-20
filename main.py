@@ -331,8 +331,10 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.23'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.24'); self.resize(1400,900)
         self.settings=QSettings('PhotoOrganizer','Photo')
+        legacy_size=self.settings.value('tools/size',50,type=int)
+        self.tool_sizes={name:max(5,min(200,self.settings.value('tools/sizes/'+name,legacy_size,type=int))) for name in ['box','brush','clone']}
         self.export_folder=str(self.settings.value('export/folder',''))
         try:self.recent_projects=json.loads(str(self.settings.value('projects/recent','[]')))
         except (ValueError,TypeError):self.recent_projects=[]
@@ -404,10 +406,10 @@ class Window(QMainWindow):
         brush_tools=QHBoxLayout(); rl.addLayout(brush_tools)
         brush_tools.addWidget(QLabel('도구'))
         self.tool=QComboBox(); self.tool.addItems(['박스','브러시','복제 도장']); brush_tools.addWidget(self.tool)
-        self.tool.currentIndexChanged.connect(lambda index:(setattr(self.canvas,'tool',['box','brush','clone'][index]),self.settings.setValue('tools/selected',index),self.canvas.update()))
+        self.tool.currentIndexChanged.connect(self.change_tool)
         brush_tools.addWidget(QLabel('브러시 크기'))
         self.brush_size=QSlider(Qt.Orientation.Horizontal); self.brush_size.setRange(5,200); self.brush_size.setValue(50)
-        self.brush_size.valueChanged.connect(lambda value:setattr(self.canvas,'brush_radius',value/2000))
+        self.brush_size.valueChanged.connect(self.change_brush_size)
         brush_tools.addWidget(self.brush_size)
         self.brush_value=QLabel('50'); brush_tools.addWidget(self.brush_value)
         self.brush_size.valueChanged.connect(lambda value:self.brush_value.setText(str(value)))
@@ -440,7 +442,6 @@ class Window(QMainWindow):
         self.list.reordering.connect(lambda:self.snapshot('그림 순서 변경')); self.list.reordered.connect(self.order_changed); self.canvas.selected.connect(self.region_event)
         self.strength.valueChanged.connect(self.strength_changed)
         self.strength.valueChanged.connect(lambda value:self.settings.setValue('tools/strength',value))
-        self.brush_size.valueChanged.connect(lambda value:self.settings.setValue('tools/size',value))
         self.clone_softness.valueChanged.connect(lambda value:self.settings.setValue('tools/softness',value))
         self.strength.sliderPressed.connect(self.begin_strength_change)
         self.strength.sliderMoved.connect(self.strength.setValue)
@@ -452,12 +453,22 @@ class Window(QMainWindow):
         self.undo_shortcut.activated.connect(self.undo)
         self.tool.setCurrentIndex(max(0,min(2,self.settings.value('tools/selected',0,type=int))))
         self.strength.setValue(self.settings.value('tools/strength',20,type=int))
-        self.brush_size.setValue(self.settings.value('tools/size',50,type=int))
+        self.change_tool(self.tool.currentIndex())
         self.clone_softness.setValue(self.settings.value('tools/softness',50,type=int))
         saved_layout=self.settings.value('layout/windowState')
         if saved_layout is not None:self.restoreState(saved_layout)
         self.refresh_recent_projects()
         self.setAcceptDrops(True)
+    def change_tool(self,index):
+        name=['box','brush','clone'][index]
+        self.canvas.tool=name;self.settings.setValue('tools/selected',index)
+        value=self.tool_sizes[name]
+        self.brush_size.blockSignals(True);self.brush_size.setValue(value);self.brush_size.blockSignals(False)
+        self.brush_value.setText(str(value));self.canvas.brush_radius=value/2000;self.canvas.update()
+    def change_brush_size(self,value):
+        name=self.canvas.tool
+        self.tool_sizes[name]=value;self.settings.setValue('tools/sizes/'+name,value)
+        self.canvas.brush_radius=value/2000;self.canvas.update()
     def run_job(self,pool,fn,callback,priority=0):
         job=Job(fn,lambda result:self.job_done(job,callback,result)); self.jobs.add(job); pool.start(job,priority)
     def job_done(self,job,callback,result):
