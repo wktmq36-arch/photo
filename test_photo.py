@@ -491,4 +491,38 @@ class Tests(unittest.TestCase):
    point=view.cell_rect(11).center();QTest.mouseClick(viewport,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,point)
    self.assertEqual(view.currentRow(),11);self.assertEqual(len(view.selectedItems()),1)
    w.dirty=False;w.close()
+ def test_tool_preferences_survive_restart(self):
+  app=QApplication.instance() or QApplication([])
+  w=Window();w.tool.setCurrentIndex(1);w.strength.setValue(8);w.brush_size.setValue(75);w.clone_softness.setValue(30);w.close()
+  reopened=Window()
+  self.assertEqual(reopened.tool.currentIndex(),1);self.assertEqual(reopened.canvas.tool,'brush')
+  self.assertEqual(reopened.strength.value(),8);self.assertEqual(reopened.brush_size.value(),75)
+  self.assertAlmostEqual(reopened.canvas.brush_radius,.0375);self.assertAlmostEqual(reopened.canvas.clone_softness,.3)
+  reopened.close()
+ def test_click_and_edit_538_through_540_of_600(self):
+  from PySide6.QtCore import Qt,QPoint
+  from PySide6.QtTest import QTest
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths=[]
+   for i in range(600):
+    p=Path(d)/f'{i+1:03d}.png';Image.new('RGB',(48,80),(i%255,30,50)).save(p);paths.append(str(p))
+   w=Window();w.show();w.activateWindow();w.add_paths(paths);deadline=time.monotonic()+30
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   for row in [537,538,539,599]:
+    w.list.scrollToItem(w.list.item(row));app.processEvents()
+    point=w.list.cell_rect(row).bottomRight()+QPoint(-3,-3)
+    QTest.mouseMove(w.list.viewport(),point)
+    QTest.mouseClick(w.list.viewport(),Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,point)
+    deadline=time.monotonic()+10
+    while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+    self.assertEqual(w.list.currentRow(),row);self.assertEqual(w.current()['path'],paths[row])
+    self.assertIsNotNone(w.canvas.pixmap)
+    w.tool.setCurrentIndex(0);rect=w.canvas.target
+    start=QPoint(round(rect.x()+rect.width()*.1),round(rect.y()+rect.height()*.1))
+    end=QPoint(round(rect.x()+rect.width()*.8),round(rect.y()+rect.height()*.8))
+    QTest.mousePress(w.canvas,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,start)
+    QTest.mouseMove(w.canvas,end);QTest.mouseRelease(w.canvas,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,end)
+    self.assertEqual(len(w.current()['regions']),1)
+   w.dirty=False;w.close()
 if __name__=='__main__':unittest.main()
