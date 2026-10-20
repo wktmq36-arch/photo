@@ -160,6 +160,16 @@ class ImageList(QListWidget):
             if row>=0 and not self.empty_press:self.itemClicked.emit(self.item(row))
         self.press_position=None;self.empty_press=False;self.collapse_on_release=None
         self.setState(QAbstractItemView.State.NoState);self.viewport().update();event.accept()
+    def keyPressEvent(self,event):
+        if event.key() in (Qt.Key.Key_Up,Qt.Key.Key_Down) and event.modifiers()==Qt.KeyboardModifier.NoModifier:
+            action=QAbstractItemView.CursorAction.MoveUp if event.key()==Qt.Key.Key_Up else QAbstractItemView.CursorAction.MoveDown
+            index=self.moveCursor(action,event.modifiers())
+            if index.isValid():
+                self.setCurrentRow(index.row(),QItemSelectionModel.SelectionFlag.ClearAndSelect)
+                self.selection_anchor=self.item(index.row()).data(Qt.ItemDataRole.UserRole)
+                self.scrollTo(index)
+            event.accept();return
+        super().keyPressEvent(event)
     def leaveEvent(self,event):
         self.hover_row=-1;self.viewport().update();super().leaveEvent(event)
     def paintEvent(self,event):
@@ -294,7 +304,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.19'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.20'); self.resize(1400,900)
         self.settings=QSettings('PhotoOrganizer','Photo')
         self.export_folder=str(self.settings.value('export/folder',''))
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.dirty=False; self.project=None
@@ -338,6 +348,7 @@ class Window(QMainWindow):
         rl.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         self.title=QLabel('그림을 선택하세요'); rl.addWidget(self.title)
         self.main_check=QCheckBox('메인 게시용으로 선택 · 별도 폴더에도 저장')
+        self.main_check.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.main_check.setEnabled(False); self.main_check.toggled.connect(self.toggle_main)
         rl.addWidget(self.main_check)
         self.canvas=Canvas(); rl.addWidget(self.canvas,1)
@@ -567,6 +578,7 @@ class Window(QMainWindow):
         entry=self.current()
         if not entry or bool(entry.get('main_selected',False))==checked:return
         self.snapshot();entry['main_selected']=checked;self.renumber()
+        self.list.setFocus(Qt.FocusReason.OtherFocusReason)
     def selection_changed(self,*args):
         self.sync_main_check()
         self.canvas.clone_source=None;self.canvas.drawing_clone=False

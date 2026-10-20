@@ -633,4 +633,24 @@ class Tests(unittest.TestCase):
    self.assertFalse(any(e['main_selected'] for e in w.ordered()))
    w.undo();self.assertTrue(all(e['main_selected'] for e in w.ordered()))
    w.dirty=False;w.close()
+ def test_main_checkbox_returns_focus_for_up_down(self):
+  from PySide6.QtCore import Qt,QPoint
+  from PySide6.QtTest import QTest
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths=[]
+   for i in range(12):
+    p=Path(d)/f'{i}.png';Image.new('RGB',(80,60),'red').save(p);paths.append(str(p))
+   w=Window();w.show();w.activateWindow();w.add_paths(paths);deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   QTest.mouseClick(w.list.viewport(),Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,w.list.cell_rect(0).center())
+   w.tool.setFocus();QTest.mouseClick(w.main_check,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,QPoint(8,w.main_check.height()//2))
+   app.processEvents();self.assertTrue(w.ordered()[0]['main_selected']);self.assertIs(app.focusWidget(),w.list)
+   tool=w.tool.currentIndex();QTest.keyClick(app.focusWidget(),Qt.Key.Key_Down);app.processEvents()
+   self.assertGreater(w.list.currentRow(),0);self.assertEqual(len(w.list.selectedItems()),1);self.assertEqual(w.tool.currentIndex(),tool)
+   QTest.keyClick(app.focusWidget(),Qt.Key.Key_Up);app.processEvents();self.assertEqual(w.list.currentRow(),0)
+   QTest.mouseClick(w.main_check,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,QPoint(8,w.main_check.height()//2));app.processEvents()
+   self.assertFalse(w.ordered()[0]['main_selected']);self.assertIs(app.focusWidget(),w.list)
+   QTest.keyClick(app.focusWidget(),Qt.Key.Key_Down);app.processEvents();self.assertGreater(w.list.currentRow(),0)
+   w.dirty=False;w.close()
 if __name__=='__main__':unittest.main()
