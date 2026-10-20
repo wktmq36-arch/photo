@@ -287,7 +287,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.17'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.18'); self.resize(1400,900)
         self.settings=QSettings('PhotoOrganizer','Photo')
         self.export_folder=str(self.settings.value('export/folder',''))
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.dirty=False; self.project=None
@@ -645,20 +645,31 @@ class Window(QMainWindow):
         if entry and 0<=i<len(entry['regions']):
             self.snapshot(); entry['regions'].pop(i); self.canvas.active=-1; self.render(); self.renumber()
     def save_project(self):
-        if self.project:self.write_project(self.project)
-        else:self.save_project_as()
+        if self.project:return self.write_project(self.project)
+        return self.save_project_as()
     def save_project_as(self):
         path,_=QFileDialog.getSaveFileName(self,'다른 이름으로 작업 저장',self.project or '작업.photo.json','Photo project (*.photo.json)')
         if path and not path.lower().endswith('.photo.json'):path+='.photo.json'
-        self.write_project(path)
+        return self.write_project(path)
     def write_project(self,path):
-        if not path:return
+        if not path:return False
         try:
             temp=Path(path+'.tmp'); temp.write_text(json.dumps({'version':1,'images':self.ordered()},ensure_ascii=False,indent=2),encoding='utf-8'); temp.replace(path)
-            self.project=path; self.dirty=False; self.status.setText('작업 저장 완료')
-        except Exception as exc:QMessageBox.warning(self,'저장 실패',str(exc))
+            self.project=path; self.dirty=False; self.status.setText('작업 저장 완료');return True
+        except Exception as exc:
+            QMessageBox.warning(self,'저장 실패',str(exc));return False
     def confirm_discard(self):
-        return not self.dirty or QMessageBox.question(self,'저장하지 않은 작업','저장하지 않은 변경 사항이 있습니다. 계속할까요?',QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No)==QMessageBox.StandardButton.Yes
+        if not self.dirty:return True
+        buttons=QMessageBox.StandardButton
+        box=QMessageBox(QMessageBox.Icon.Question,'작업 저장',
+            '저장하지 않은 변경 사항이 있습니다. 저장할까요?',buttons.Save|buttons.Discard|buttons.Cancel,self)
+        box.button(buttons.Save).setText('저장')
+        box.button(buttons.Discard).setText('저장하지 않음')
+        box.button(buttons.Cancel).setText('취소')
+        box.setDefaultButton(buttons.Save);box.setEscapeButton(buttons.Cancel)
+        result=box.exec()
+        if result==buttons.Save:return self.save_project()
+        return result==buttons.Discard
     def load_project(self):
         if not self.confirm_discard():return
         path,_=QFileDialog.getOpenFileName(self,'작업 열기','','Photo project (*.photo.json)')

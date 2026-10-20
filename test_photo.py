@@ -573,4 +573,30 @@ class Tests(unittest.TestCase):
     self.assertFalse(w.thumb_waiters)
     w.list.selectAll();w.remove_selected();w.undo();app.processEvents();reader.assert_not_called()
    w.dirty=False;w.close()
+ def test_close_save_discard_cancel_and_save_failure(self):
+  from unittest.mock import patch
+  from PySide6.QtGui import QCloseEvent
+  from PySide6.QtWidgets import QMessageBox
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   source=Path(d)/'source.png';Image.new('RGB',(80,60),'red').save(source)
+   w=Window();w.add_paths([str(source)]);deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   B=QMessageBox.StandardButton
+   with patch('main.QMessageBox.exec',return_value=B.Cancel):
+    event=QCloseEvent();w.closeEvent(event);self.assertFalse(event.isAccepted());self.assertTrue(w.dirty)
+   with patch('main.QMessageBox.exec',return_value=B.Save),patch('main.QFileDialog.getSaveFileName',return_value=('','')):
+    event=QCloseEvent();w.closeEvent(event);self.assertFalse(event.isAccepted());self.assertTrue(w.dirty)
+   project=str(Path(d)/'saved.photo.json')
+   with patch('main.QMessageBox.exec',return_value=B.Save),patch('main.QFileDialog.getSaveFileName',return_value=(project,'')):
+    event=QCloseEvent();w.closeEvent(event);self.assertTrue(event.isAccepted());self.assertFalse(w.dirty);self.assertTrue(Path(project).exists())
+   w.dirty=True;w.project=str(Path(d)/'missing'/'fail.photo.json')
+   with patch('main.QMessageBox.exec',return_value=B.Save),patch('main.QMessageBox.warning'):
+    event=QCloseEvent();w.closeEvent(event);self.assertFalse(event.isAccepted());self.assertTrue(w.dirty)
+   with patch('main.QMessageBox.exec',return_value=B.Discard):
+    event=QCloseEvent();w.closeEvent(event);self.assertTrue(event.isAccepted())
+   w.dirty=False
+   with patch('main.QMessageBox.exec') as dialog:
+    event=QCloseEvent();w.closeEvent(event);self.assertTrue(event.isAccepted());dialog.assert_not_called()
+   w.close()
 if __name__=='__main__':unittest.main()
