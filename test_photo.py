@@ -599,4 +599,38 @@ class Tests(unittest.TestCase):
    with patch('main.QMessageBox.exec') as dialog:
     event=QCloseEvent();w.closeEvent(event);self.assertTrue(event.isAccepted());dialog.assert_not_called()
    w.close()
+ def test_selection_count_and_bulk_main_context_menu(self):
+  from unittest.mock import patch
+  from PySide6.QtCore import Qt
+  from PySide6.QtTest import QTest
+  from PySide6.QtWidgets import QMenu
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths=[]
+   for i in range(5):
+    p=Path(d)/f'{i}.png';Image.new('RGB',(80,60),'red').save(p);paths.append(str(p))
+   w=Window();w.show();w.add_paths(paths);deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   view=w.list
+   QTest.mouseClick(view.viewport(),Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,view.cell_rect(0).center())
+   for row in [2,4]:QTest.mouseClick(view.viewport(),Qt.MouseButton.LeftButton,Qt.KeyboardModifier.ControlModifier,view.cell_rect(row).center())
+   self.assertEqual(w.selection_count.text(),'선택 3장')
+   QTest.mousePress(view.viewport(),Qt.MouseButton.RightButton,Qt.KeyboardModifier.NoModifier,view.cell_rect(2).center())
+   self.assertEqual(len(view.selectedItems()),3)
+   QTest.mouseRelease(view.viewport(),Qt.MouseButton.RightButton,Qt.KeyboardModifier.NoModifier,view.cell_rect(2).center())
+   menu=QMenu()
+   with patch('main.QMenu',return_value=menu),patch.object(menu,'exec',side_effect=lambda pos:menu.actions()[0].trigger()):
+    w.thumbnail_context_menu(view.cell_rect(2).center())
+   self.assertIn('3장',menu.actions()[0].text())
+   self.assertEqual([i for i,e in enumerate(w.ordered()) if e['main_selected']],[0,2,4])
+   self.assertEqual(w.selection_count.text(),'선택 3장')
+   w.undo();self.assertFalse(any(e['main_selected'] for e in w.ordered()))
+   view.selectAll();self.assertEqual(w.selection_count.text(),'선택 5장')
+   ids=[e['id'] for e in w.ordered()];w.set_main_for_ids(ids,True)
+   menu2=QMenu()
+   with patch('main.QMenu',return_value=menu2),patch.object(menu2,'exec',side_effect=lambda pos:menu2.actions()[1].trigger()):
+    w.thumbnail_context_menu(view.cell_rect(1).center())
+   self.assertFalse(any(e['main_selected'] for e in w.ordered()))
+   w.undo();self.assertTrue(all(e['main_selected'] for e in w.ordered()))
+   w.dirty=False;w.close()
 if __name__=='__main__':unittest.main()

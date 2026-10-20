@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt, QSize, QRect, QRectF, Signal, QObject, QRunnable,
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKeySequence, QFontDatabase, QFont, QShortcut, QDrag
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem,
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
-    QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit)
+    QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu)
 from exporting import prepare_output
 from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, export_image, export_pair
 
@@ -76,6 +76,12 @@ class ImageList(QListWidget):
             if self.cell_rect(row).contains(pos):return row
         return -1
     def mousePressEvent(self,event):
+        if event.button()==Qt.MouseButton.RightButton:
+            row=self.row_at(event.position().toPoint())
+            if row>=0 and not self.item(row).isSelected():
+                self.setCurrentRow(row,QItemSelectionModel.SelectionFlag.ClearAndSelect)
+                self.selection_anchor=self.item(row).data(Qt.ItemDataRole.UserRole)
+            self.setFocus(Qt.FocusReason.MouseFocusReason);event.accept();return
         if event.button()!=Qt.MouseButton.LeftButton:
             super().mousePressEvent(event);return
         pos=event.position().toPoint();row=self.row_at(pos)
@@ -137,6 +143,7 @@ class ImageList(QListWidget):
             event.accept(); return
         event.accept()
     def mouseReleaseEvent(self,event):
+        if event.button()==Qt.MouseButton.RightButton:event.accept();return
         if event.button()!=Qt.MouseButton.LeftButton:
             super().mouseReleaseEvent(event);return
         if self.dragging:
@@ -287,7 +294,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.18'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.19'); self.resize(1400,900)
         self.settings=QSettings('PhotoOrganizer','Photo')
         self.export_folder=str(self.settings.value('export/folder',''))
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.dirty=False; self.project=None
@@ -318,8 +325,14 @@ class Window(QMainWindow):
         splitter.setHandleWidth(14); splitter.setChildrenCollapsible(False)
         splitter.setStyleSheet('QSplitter::handle:horizontal {background:#687c94; border:4px solid #dfe5ed; border-radius:5px;} QSplitter::handle:horizontal:hover {background:#2788e8;}')
         layout.addWidget(splitter,1)
-        left=QWidget(); ll=QVBoxLayout(left); ll.addWidget(QLabel('썸네일 드래그로 순서 변경 · Delete로 제외'))
+        left=QWidget(); ll=QVBoxLayout(left)
+        thumbnail_header=QHBoxLayout();ll.addLayout(thumbnail_header)
+        thumbnail_header.addWidget(QLabel('드래그로 순서 변경 · Delete로 제외'))
+        thumbnail_header.addStretch();self.selection_count=QLabel('선택 0장');thumbnail_header.addWidget(self.selection_count)
         self.list=ImageList(); ll.addWidget(self.list); splitter.addWidget(left)
+        self.list.itemSelectionChanged.connect(self.update_selection_count)
+        self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self.thumbnail_context_menu)
         left.setMinimumWidth(180)
         right=QWidget(); right.setMinimumWidth(460); rl=QVBoxLayout(right)
         rl.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
@@ -486,6 +499,7 @@ class Window(QMainWindow):
         self.renumber()
         if self.list.currentRow()<0:self.list.setCurrentRow(0)
     def renumber(self):
+        self.update_selection_count()
         for i in range(self.list.count()):
             item=self.list.item(i); entry=self.entries[item.data(Qt.ItemDataRole.UserRole)]
             item.setText(f'{i+1:03d}  '+Path(entry['path']).name+('  [도장]' if entry.get('clones') else ''))
@@ -528,6 +542,27 @@ class Window(QMainWindow):
         self.main_check.setEnabled(entry is not None)
         self.main_check.setChecked(bool(entry and entry.get('main_selected',False)))
         self.main_check.blockSignals(False)
+    def update_selection_count(self):
+        self.selection_count.setText(f'선택 {len(self.list.selectedItems())}장')
+    def thumbnail_context_menu(self,pos):
+        row=self.list.row_at(pos)
+        if row>=0 and not self.list.item(row).isSelected():
+            self.list.setCurrentRow(row,QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        ids=[item.data(Qt.ItemDataRole.UserRole) for item in self.list.selectedItems()]
+        if not ids:return
+        menu=QMenu(self.list)
+        mark=menu.addAction(f'선택한 {len(ids)}장 메인으로 지정')
+        unmark=menu.addAction(f'선택한 {len(ids)}장 메인 지정 해제')
+        mark.triggered.connect(lambda:self.set_main_for_ids(ids,True))
+        unmark.triggered.connect(lambda:self.set_main_for_ids(ids,False))
+        menu.exec(self.list.viewport().mapToGlobal(pos))
+    def set_main_for_ids(self,ids,checked):
+        targets=[self.entries[eid] for eid in set(ids) if eid in self.entries and bool(self.entries[eid].get('main_selected'))!=checked]
+        if not targets:return
+        self.snapshot()
+        for entry in targets:entry['main_selected']=checked
+        self.sync_main_check();self.renumber()
+        self.status.setText(f'{len(targets)}장 메인 '+('지정 완료' if checked else '지정 해제 완료')+' · Ctrl+Z로 일괄 취소')
     def toggle_main(self,checked):
         entry=self.current()
         if not entry or bool(entry.get('main_selected',False))==checked:return
