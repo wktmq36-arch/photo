@@ -368,7 +368,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.25'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.26'); self.resize(1400,900)
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
         self.tool_sizes={name:max(5,min(200,self.settings.value('tools/sizes/'+name,legacy_size,type=int))) for name in ['box','brush','clone']}
@@ -377,7 +377,7 @@ class Window(QMainWindow):
         except (ValueError,TypeError):self.recent_projects=[]
         if not isinstance(self.recent_projects,list):self.recent_projects=[]
         self.recent_projects=[path for path in self.recent_projects if isinstance(path,str)]
-        self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.history_labels=[]; self.dirty=False; self.project=None
+        self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.history_labels=[]; self.redo_stack=[]; self.dirty=False; self.project=None
         self.thumb_cache=OrderedDict();self.thumb_waiters={};self.thumb_cache_bytes=0
         self.pool=QThreadPool(self); self.pool.setMaxThreadCount(4)
         self.preview_pool=QThreadPool(self); self.preview_pool.setMaxThreadCount(2)
@@ -385,8 +385,10 @@ class Window(QMainWindow):
         self.jobs=set(); self.errors=[]; self.busy=False
         root=QWidget(); self.setCentralWidget(root); layout=QVBoxLayout(root)
         top=QHBoxLayout(); layout.addLayout(top)
-        for label,fn in [('파일 추가',self.add_dialog),('폴더 추가',self.folder_dialog),('작업 열기',self.load_project),('작업 저장',self.save_project),('실행 취소',self.undo),('목록에서 제외',self.remove_selected)]:
+        for label,fn in [('파일 추가',self.add_dialog),('폴더 추가',self.folder_dialog),('작업 열기',self.load_project),('작업 저장',self.save_project),('실행 취소',self.undo),('다시 실행',self.redo),('목록에서 제외',self.remove_selected)]:
             button=QPushButton(label); button.clicked.connect(fn); top.addWidget(button)
+            if label=='실행 취소':self.undo_button=button
+            elif label=='다시 실행':self.redo_button=button
         self.history_dock=QDockWidget('저장한 작업',self);self.history_dock.setObjectName('photoHistoryDock')
         self.history_dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea|Qt.DockWidgetArea.RightDockWidgetArea)
         history_body=QWidget();history_layout=QVBoxLayout(history_body)
@@ -489,6 +491,10 @@ class Window(QMainWindow):
         self.undo_shortcut=QShortcut(QKeySequence.StandardKey.Undo,self)
         self.undo_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self.undo_shortcut.activated.connect(self.undo)
+        self.redo_shortcuts=[]
+        for key in ['Ctrl+Y','Ctrl+Shift+Z']:
+            shortcut=QShortcut(QKeySequence(key),self);shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+            shortcut.activated.connect(self.redo);self.redo_shortcuts.append(shortcut)
         self.tool.setCurrentIndex(max(0,min(2,self.settings.value('tools/selected',0,type=int))))
         self.strength.setValue(self.settings.value('tools/strength',20,type=int))
         self.change_tool(self.tool.currentIndex())
@@ -496,6 +502,7 @@ class Window(QMainWindow):
         saved_layout=self.settings.value('layout/windowState')
         if saved_layout is not None:self.restoreState(saved_layout)
         self.refresh_recent_projects()
+        self.update_history_controls()
         self.setAcceptDrops(True)
     def change_tool(self,index):
         name=['box','brush','clone'][index]
@@ -547,15 +554,31 @@ class Window(QMainWindow):
         paths=sorted(Path(folder).rglob('*.photo.json'),key=lambda path:path.stat().st_mtime_ns)
         for path in paths:self.remember_project(path)
         self.status.setText(f'저장한 작업 {len(paths)}개를 목록에 추가했습니다.')
-    def snapshot(self,label='작업 변경'):
+    def capture_state(self):
         entry=self.current()
-        self.history.append((copy.deepcopy(self.ordered()),entry['id'] if entry else None,self.canvas.active))
+        return (copy.deepcopy(self.ordered()),entry['id'] if entry else None,self.canvas.active)
+    def update_history_controls(self):
+        self.undo_button.setEnabled(bool(self.history));self.redo_button.setEnabled(bool(self.redo_stack))
+        self.undo_button.setToolTip('Ctrl+Z');self.redo_button.setToolTip('Ctrl+Y 또는 Ctrl+Shift+Z')
+    def snapshot(self,label='작업 변경'):
+        self.history.append(self.capture_state())
         self.history=self.history[-30:];self.history_labels.append(label);self.history_labels=self.history_labels[-30:]
-        self.dirty=True
+        self.redo_stack.clear();self.update_history_controls();self.dirty=True
     def undo(self):
-        if not self.history: return
-        state,current_id,active=self.history.pop()
-        if self.history_labels:self.history_labels.pop()
+        if not self.history:return
+        label=self.history_labels.pop() if self.history_labels else '작업 변경'
+        self.redo_stack.append((self.capture_state(),label))
+        self.restore_state(self.history.pop());self.update_history_controls()
+        self.status.setText('실행 취소: '+label)
+    def redo(self):
+        if not self.redo_stack:return
+        state,label=self.redo_stack.pop()
+        self.history.append(self.capture_state());self.history=self.history[-30:]
+        self.history_labels.append(label);self.history_labels=self.history_labels[-30:]
+        self.restore_state(state);self.update_history_controls()
+        self.status.setText('다시 실행: '+label)
+    def restore_state(self,snapshot):
+        state,current_id,active=snapshot
         # Editing a region does not require reloading every thumbnail.
         if [e['id'] for e in state]==[e['id'] for e in self.ordered()]:
             self.entries={e['id']:e for e in state}
@@ -875,7 +898,7 @@ class Window(QMainWindow):
                     if r.get('kind')=='brush':
                         if not isinstance(r.get('points'),list) or not r['points'] or not 0<r.get('radius',0)<=.1:raise ValueError('잘못된 브러시 영역')
                         if not all(len(point)==2 and all(isinstance(v,(int,float)) and 0<=v<=1 for v in point) for point in r['points']):raise ValueError('잘못된 브러시 좌표')
-            self.populate(entries); self.history=[]; self.history_labels=[]; self.project=str(Path(path).resolve()); self.dirty=False
+            self.populate(entries); self.history=[]; self.history_labels=[]; self.redo_stack=[];self.update_history_controls(); self.project=str(Path(path).resolve()); self.dirty=False
             self.remember_project(self.project);return True
         except Exception as exc:
             QMessageBox.warning(self,'열기 실패',str(exc));return False

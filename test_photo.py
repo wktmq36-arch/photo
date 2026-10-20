@@ -750,4 +750,33 @@ class Tests(unittest.TestCase):
   QTest.mouseClick(w.tool.buttons[2],Qt.MouseButton.LeftButton)
   self.assertEqual(w.brush_size.value(),12);self.assertEqual(w.canvas.tool,'clone')
   w.close()
+ def test_redo_multiple_edits_and_new_branch(self):
+  import copy
+  from PySide6.QtCore import Qt
+  from PySide6.QtTest import QTest
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths=[]
+   for i in range(3):
+    p=Path(d)/f'{i}.png';Image.new('RGB',(80,60),'red').save(p);paths.append(str(p))
+   w=Window();w.show();w.activateWindow();states=[[]]
+   w.add_paths(paths);deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   states.append(copy.deepcopy(w.ordered()))
+   w.region_event(('add',[.1,.1,.6,.6]));states.append(copy.deepcopy(w.ordered()))
+   w.main_check.setChecked(True);states.append(copy.deepcopy(w.ordered()))
+   w.region_event(('clone_start',{'source':[.1,.1],'points':[[.7,.7]],'radius':.02,'softness':.5}));states.append(copy.deepcopy(w.ordered()))
+   w.list.move_ids([w.ordered()[0]['id']],3);states.append(copy.deepcopy(w.ordered()))
+   w.remove_selected();states.append(copy.deepcopy(w.ordered()))
+   for expected in reversed(states[:-1]):w.undo();self.assertEqual(w.ordered(),expected)
+   self.assertTrue(w.redo_button.isEnabled());self.assertFalse(w.undo_button.isEnabled())
+   w.list.setFocus()
+   for i,expected in enumerate(states[1:]):
+    key=Qt.Key.Key_Y if i%2==0 else Qt.Key.Key_Z
+    mods=Qt.KeyboardModifier.ControlModifier if i%2==0 else Qt.KeyboardModifier.ControlModifier|Qt.KeyboardModifier.ShiftModifier
+    QTest.keyClick(w.list,key,mods);app.processEvents();self.assertEqual(w.ordered(),expected)
+   self.assertFalse(w.redo_button.isEnabled());w.undo();self.assertTrue(w.redo_stack)
+   w.region_event(('add',[.2,.2,.8,.8]));self.assertFalse(w.redo_stack);self.assertFalse(w.redo_button.isEnabled())
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close()
 if __name__=='__main__':unittest.main()
