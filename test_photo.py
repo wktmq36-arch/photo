@@ -653,4 +653,44 @@ class Tests(unittest.TestCase):
    self.assertFalse(w.ordered()[0]['main_selected']);self.assertIs(app.focusWidget(),w.list)
    QTest.keyClick(app.focusWidget(),Qt.Key.Key_Down);app.processEvents();self.assertGreater(w.list.currentRow(),0)
    w.dirty=False;w.close()
+ def test_wheel_zoom_anchor_pan_and_edit_coordinates(self):
+  from PySide6.QtCore import Qt,QPoint,QPointF
+  from PySide6.QtGui import QWheelEvent
+  from PySide6.QtTest import QTest
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'zoom.png';Image.new('RGB',(400,400),'red').save(path)
+   w=Window();w.show();w.activateWindow();w.add_paths([str(path)]);deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   canvas=w.canvas;point=QPointF(canvas.rect().center());before=canvas.normalized(point)
+   wheel=QWheelEvent(point,QPointF(canvas.mapToGlobal(point.toPoint())),QPoint(),QPoint(0,480),Qt.MouseButton.NoButton,Qt.KeyboardModifier.NoModifier,Qt.ScrollPhase.NoScrollPhase,False)
+   app.sendEvent(canvas,wheel);app.processEvents()
+   self.assertGreater(canvas.zoom,2);after=canvas.normalized(point)
+   self.assertAlmostEqual(before[0],after[0],places=5);self.assertAlmostEqual(before[1],after[1],places=5)
+   pan=QPointF(canvas.pan)
+   QTest.mousePress(canvas,Qt.MouseButton.MiddleButton,Qt.KeyboardModifier.NoModifier,point.toPoint())
+   QTest.mouseMove(canvas,point.toPoint()+QPoint(30,20));QTest.mouseRelease(canvas,Qt.MouseButton.MiddleButton,Qt.KeyboardModifier.NoModifier,point.toPoint()+QPoint(30,20))
+   self.assertAlmostEqual(canvas.pan.x()-pan.x(),30);self.assertAlmostEqual(canvas.pan.y()-pan.y(),20)
+   start=canvas.rect().center();end=start+QPoint(35,30);a,b=canvas.normalized(start);c,e=canvas.normalized(end)
+   QTest.mousePress(canvas,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,start);QTest.mouseMove(canvas,end);QTest.mouseRelease(canvas,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,end)
+   rect=w.current()['regions'][0]['rect']
+   for actual,expected in zip(rect,[a,b,c,e]):self.assertAlmostEqual(actual,expected,places=5)
+   canvas.reset_view();self.assertEqual(canvas.zoom,1);self.assertEqual(canvas.pan,QPointF())
+   w.dirty=False;w.close()
+ def test_panel_layout_persists_and_history_updates(self):
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'history.png';Image.new('RGB',(80,60),'red').save(path)
+   w=Window();w.show();w.add_paths([str(path)]);deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   self.assertIn('그림 추가',w.history_list.item(0).text())
+   w.region_event(('add',[.1,.1,.6,.6]));self.assertIn('박스 모자이크',w.history_list.item(0).text())
+   w.undo();self.assertIn('그림 추가',w.history_list.item(0).text())
+   w.history_dock.hide();w.splitter.setSizes([300,700]);app.processEvents()
+   ratio=w.splitter.sizes()[0]/sum(w.splitter.sizes());w.dirty=False;w.close()
+   reopened=Window();reopened.show();app.processEvents()
+   restored=reopened.splitter.sizes()[0]/sum(reopened.splitter.sizes())
+   self.assertAlmostEqual(ratio,restored,delta=.04);self.assertTrue(reopened.history_dock.isHidden())
+   reopened.history_toggle.click();app.processEvents();self.assertTrue(reopened.history_dock.isVisible())
+   reopened.close()
 if __name__=='__main__':unittest.main()

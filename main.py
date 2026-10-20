@@ -1,11 +1,11 @@
 import sys, json, uuid, copy, time
 from pathlib import Path
 from collections import OrderedDict
-from PySide6.QtCore import Qt, QSize, QRect, QRectF, Signal, QObject, QRunnable, QThreadPool, QTimer, QMimeData, QItemSelectionModel, QSettings
+from PySide6.QtCore import Qt, QSize, QRect, QRectF, QPointF, Signal, QObject, QRunnable, QThreadPool, QTimer, QMimeData, QItemSelectionModel, QSettings
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKeySequence, QFontDatabase, QFont, QShortcut, QDrag
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem,
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
-    QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu)
+    QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu, QDockWidget)
 from exporting import prepare_output
 from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, export_image, export_pair
 
@@ -237,12 +237,35 @@ class ImageList(QListWidget):
 
 class Canvas(QWidget):
     selected = Signal(object)
+    zoomChanged = Signal(float)
     def __init__(self):
         super().__init__(); self.setMinimumSize(320, 300)
         self.pixmap = None; self.regions = []; self.active = -1; self.start = None; self.end = None
         self.tool='box'; self.brush_radius=.025; self.stroke=[]; self.drawing_brush=False
         self.clone_source=None;self.drawing_clone=False;self.clone_softness=.5;self.hover=None;self.setMouseTracking(True)
-        self.zoom = 1.0; self.target = QRectF()
+        self.zoom = 1.0;self.pan=QPointF();self.pan_start=None; self.target = QRectF()
+    def update_target(self):
+        if not self.pixmap:return
+        size=self.pixmap.size();scale=min(self.width()/size.width(),self.height()/size.height())*self.zoom
+        width,height=size.width()*scale,size.height()*scale
+        self.target=QRectF((self.width()-width)/2+self.pan.x(),(self.height()-height)/2+self.pan.y(),width,height)
+    def reset_view(self):
+        self.zoom=1.;self.pan=QPointF();self.pan_start=None
+        self.update_target();self.zoomChanged.emit(self.zoom);self.update()
+    def wheelEvent(self,event):
+        if not self.pixmap:event.ignore();return
+        if self.start is not None or self.drawing_brush or self.drawing_clone:event.accept();return
+        delta=event.angleDelta().y()/120
+        if not delta:delta=event.pixelDelta().y()/120
+        if not delta:event.accept();return
+        self.update_target();point=event.position()
+        u=(point.x()-self.target.x())/self.target.width();v=(point.y()-self.target.y())/self.target.height()
+        self.zoom=max(.25,min(16.,self.zoom*1.2**delta));self.update_target()
+        self.pan+=QPointF(point.x()-(self.target.x()+u*self.target.width()),point.y()-(self.target.y()+v*self.target.height()))
+        self.update_target();self.hover=point;self.zoomChanged.emit(self.zoom);self.update();event.accept()
+    def mouseDoubleClickEvent(self,event):
+        if event.button()==Qt.MouseButton.MiddleButton:self.reset_view();event.accept();return
+        super().mouseDoubleClickEvent(event)
     def normalized(self, point):
         return (max(0., min(1., (point.x()-self.target.x())/max(1,self.target.width()))),
                 max(0., min(1., (point.y()-self.target.y())/max(1,self.target.height()))))
@@ -250,9 +273,7 @@ class Canvas(QWidget):
         p = QPainter(self); p.fillRect(self.rect(), QColor('#14171d'))
         if not self.pixmap:
             p.setPen(QColor('#a4aec0')); p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, '그림을 드래그해서 추가하세요'); return
-        size = self.pixmap.size(); scale = min(self.width()/size.width(), self.height()/size.height())
-        w,h = size.width()*scale,size.height()*scale
-        self.target = QRectF((self.width()-w)/2,(self.height()-h)/2,w,h)
+        self.update_target();w,h=self.target.width(),self.target.height()
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         p.drawPixmap(self.target, self.pixmap, QRectF(self.pixmap.rect()))
         if self.tool=='clone':
@@ -265,6 +286,8 @@ class Canvas(QWidget):
         if self.start is not None and self.end is not None:
             p.setPen(QPen(QColor('#ffffff'),2,Qt.PenStyle.DashLine)); p.drawRect(QRectF(self.start,self.end).normalized())
     def mousePressEvent(self,event):
+        if self.pixmap and event.button()==Qt.MouseButton.MiddleButton:
+            self.pan_start=event.position();self.setCursor(Qt.CursorShape.ClosedHandCursor);event.accept();return
         if self.pixmap and self.tool=='clone' and event.button()==Qt.MouseButton.LeftButton and self.target.contains(event.position()):
             if event.modifiers() & Qt.KeyboardModifier.AltModifier:
                 self.clone_source=self.normalized(event.position());self.selected.emit(('clone_source',self.clone_source));self.update();return
@@ -279,6 +302,8 @@ class Canvas(QWidget):
                 self.start=event.position(); self.end=self.start
     def mouseMoveEvent(self,event):
         self.hover=event.position();self.update()
+        if self.pan_start is not None:
+            self.pan+=event.position()-self.pan_start;self.pan_start=event.position();self.update_target();event.accept();return
         if self.drawing_clone:
             self.stroke.append(self.normalized(event.position()));self.selected.emit(('clone_move',self.stroke.copy()));return
         if self.drawing_brush:
@@ -287,6 +312,8 @@ class Canvas(QWidget):
             return
         if self.start is not None: self.end=event.position(); self.update()
     def mouseReleaseEvent(self,event):
+        if event.button()==Qt.MouseButton.MiddleButton:
+            self.pan_start=None;self.unsetCursor();event.accept();return
         if self.drawing_clone:
             self.stroke.append(self.normalized(event.position()));self.selected.emit(('clone_move',self.stroke.copy()));self.drawing_clone=False;return
         if self.drawing_brush:
@@ -304,10 +331,10 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.20'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.22'); self.resize(1400,900)
         self.settings=QSettings('PhotoOrganizer','Photo')
         self.export_folder=str(self.settings.value('export/folder',''))
-        self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.dirty=False; self.project=None
+        self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.history_labels=[]; self.dirty=False; self.project=None
         self.thumb_cache=OrderedDict();self.thumb_waiters={};self.thumb_cache_bytes=0
         self.pool=QThreadPool(self); self.pool.setMaxThreadCount(4)
         self.preview_pool=QThreadPool(self); self.preview_pool.setMaxThreadCount(2)
@@ -317,6 +344,17 @@ class Window(QMainWindow):
         top=QHBoxLayout(); layout.addLayout(top)
         for label,fn in [('파일 추가',self.add_dialog),('폴더 추가',self.folder_dialog),('작업 열기',self.load_project),('작업 저장',self.save_project),('실행 취소',self.undo),('목록에서 제외',self.remove_selected)]:
             button=QPushButton(label); button.clicked.connect(fn); top.addWidget(button)
+        self.history_dock=QDockWidget('작업 내역',self);self.history_dock.setObjectName('photoHistoryDock')
+        self.history_dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea|Qt.DockWidgetArea.RightDockWidgetArea)
+        history_body=QWidget();history_layout=QVBoxLayout(history_body)
+        self.history_summary=QLabel('현재 세션 · 실행 취소 가능 0건');history_layout.addWidget(self.history_summary)
+        self.history_list=QListWidget();self.history_list.setMinimumWidth(170);history_layout.addWidget(self.history_list)
+        undo_button=QPushButton('실행 취소 (Ctrl+Z)');undo_button.clicked.connect(self.undo);history_layout.addWidget(undo_button)
+        self.history_dock.setWidget(history_body);self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,self.history_dock)
+        self.resizeDocks([self.history_dock],[210],Qt.Orientation.Horizontal)
+        history_toggle=QPushButton('작업 내역');history_toggle.setCheckable(True);history_toggle.setChecked(True)
+        history_toggle.toggled.connect(self.history_dock.setVisible);self.history_dock.visibilityChanged.connect(history_toggle.setChecked)
+        top.addWidget(history_toggle);self.history_toggle=history_toggle
         top.addStretch()
         export_controls=QHBoxLayout();layout.addLayout(export_controls)
         folder_button=QPushButton('저장 위치 변경');folder_button.clicked.connect(self.choose_export_folder);export_controls.addWidget(folder_button)
@@ -352,6 +390,11 @@ class Window(QMainWindow):
         self.main_check.setEnabled(False); self.main_check.toggled.connect(self.toggle_main)
         rl.addWidget(self.main_check)
         self.canvas=Canvas(); rl.addWidget(self.canvas,1)
+        view_controls=QHBoxLayout();rl.addLayout(view_controls)
+        fit_button=QPushButton('화면에 맞춤');fit_button.clicked.connect(self.canvas.reset_view);view_controls.addWidget(fit_button)
+        self.zoom_label=QLabel('100%');view_controls.addWidget(self.zoom_label)
+        self.canvas.zoomChanged.connect(lambda zoom:self.zoom_label.setText(f'{zoom*100:.0f}%'))
+        view_controls.addWidget(QLabel('휠: 확대/축소 · 가운데 버튼 드래그: 화면 이동'));view_controls.addStretch()
         brush_tools=QHBoxLayout(); rl.addLayout(brush_tools)
         brush_tools.addWidget(QLabel('도구'))
         self.tool=QComboBox(); self.tool.addItems(['박스','브러시','복제 도장']); brush_tools.addWidget(self.tool)
@@ -380,12 +423,15 @@ class Window(QMainWindow):
         batch_tools.addWidget(QLabel('Ctrl/Shift로 여러 장 선택 · Ctrl+A로 전체 선택')); batch_tools.addStretch()
         rl.addWidget(QLabel('박스: 드래그 / 영역 클릭 · 브러시: 문지르기 · Ctrl+Z: 취소 · ← / →: 이전 / 다음 그림'))
         splitter.addWidget(right); splitter.setSizes([580,820])
+        saved_splitter=self.settings.value('layout/splitter')
+        if saved_splitter is not None:splitter.restoreState(saved_splitter)
+        splitter.splitterMoved.connect(lambda pos,index:self.settings.setValue('layout/splitter',splitter.saveState()))
         splitter.handle(1).setCursor(Qt.CursorShape.SizeHorCursor)
         splitter.handle(1).setToolTip('좌우로 드래그해서 썸네일과 미리보기 너비 조절')
         self.progress=QProgressBar(); self.progress.hide(); layout.addWidget(self.progress)
         self.status=QLabel('원본을 보존하며, 결과 파일에는 메타데이터를 저장하지 않습니다.'); layout.addWidget(self.status)
         self.list.dropped.connect(self.add_paths); self.list.currentItemChanged.connect(self.selection_changed)
-        self.list.reordering.connect(self.snapshot); self.list.reordered.connect(self.order_changed); self.canvas.selected.connect(self.region_event)
+        self.list.reordering.connect(lambda:self.snapshot('그림 순서 변경')); self.list.reordered.connect(self.order_changed); self.canvas.selected.connect(self.region_event)
         self.strength.valueChanged.connect(self.strength_changed)
         self.strength.valueChanged.connect(lambda value:self.settings.setValue('tools/strength',value))
         self.brush_size.valueChanged.connect(lambda value:self.settings.setValue('tools/size',value))
@@ -402,6 +448,9 @@ class Window(QMainWindow):
         self.strength.setValue(self.settings.value('tools/strength',20,type=int))
         self.brush_size.setValue(self.settings.value('tools/size',50,type=int))
         self.clone_softness.setValue(self.settings.value('tools/softness',50,type=int))
+        saved_layout=self.settings.value('layout/windowState')
+        if saved_layout is not None:self.restoreState(saved_layout)
+        self.update_history_panel()
         self.setAcceptDrops(True)
     def run_job(self,pool,fn,callback,priority=0):
         job=Job(fn,lambda result:self.job_done(job,callback,result)); self.jobs.add(job); pool.start(job,priority)
@@ -414,13 +463,21 @@ class Window(QMainWindow):
     def ordered(self): return [self.entries[self.list.item(i).data(Qt.ItemDataRole.UserRole)] for i in range(self.list.count())]
     def current(self):
         item=self.list.currentItem(); return self.entries.get(item.data(Qt.ItemDataRole.UserRole)) if item else None
-    def snapshot(self):
+    def update_history_panel(self):
+        self.history_summary.setText(f'현재 세션 · 실행 취소 가능 {len(self.history)}건')
+        self.history_list.clear()
+        for label in reversed(self.history_labels):self.history_list.addItem(label)
+        if not self.history_labels:self.history_list.addItem('작업 내역이 없습니다.')
+    def snapshot(self,label='작업 변경'):
         entry=self.current()
         self.history.append((copy.deepcopy(self.ordered()),entry['id'] if entry else None,self.canvas.active))
-        self.history=self.history[-30:]; self.dirty=True
+        self.history=self.history[-30:];self.history_labels.append(label);self.history_labels=self.history_labels[-30:]
+        self.update_history_panel();self.dirty=True
     def undo(self):
         if not self.history: return
         state,current_id,active=self.history.pop()
+        if self.history_labels:self.history_labels.pop()
+        self.update_history_panel()
         # Editing a region does not require reloading every thumbnail.
         if [e['id'] for e in state]==[e['id'] for e in self.ordered()]:
             self.entries={e['id']:e for e in state}
@@ -505,7 +562,7 @@ class Window(QMainWindow):
         paths=[str(p.resolve()) for p in expanded if p.is_file() and p.suffix.lower() in EXTENSIONS]
         paths=list(dict.fromkeys(p for p in paths if p not in known))
         if not paths:return
-        self.snapshot()
+        self.snapshot(f'그림 추가 · {len(paths)}장')
         for path in paths:self.insert_entry({'id':uuid.uuid4().hex,'path':path,'regions':[]})
         self.renumber()
         if self.list.currentRow()<0:self.list.setCurrentRow(0)
@@ -525,7 +582,7 @@ class Window(QMainWindow):
         # Pick by the current visual order, never by Qt's implicit selection
         # changes while individual rows are being removed.
         next_row=rows[0]
-        self.snapshot(); self.list.blockSignals(True)
+        self.snapshot(f'목록에서 제외 · {len(rows)}장'); self.list.blockSignals(True)
         for row in reversed(rows):
             item=self.list.takeItem(row)
             self.entries.pop(item.data(Qt.ItemDataRole.UserRole),None)
@@ -570,17 +627,18 @@ class Window(QMainWindow):
     def set_main_for_ids(self,ids,checked):
         targets=[self.entries[eid] for eid in set(ids) if eid in self.entries and bool(self.entries[eid].get('main_selected'))!=checked]
         if not targets:return
-        self.snapshot()
+        self.snapshot(('메인 일괄 지정' if checked else '메인 일괄 해제')+f' · {len(targets)}장')
         for entry in targets:entry['main_selected']=checked
         self.sync_main_check();self.renumber()
         self.status.setText(f'{len(targets)}장 메인 '+('지정 완료' if checked else '지정 해제 완료')+' · Ctrl+Z로 일괄 취소')
     def toggle_main(self,checked):
         entry=self.current()
         if not entry or bool(entry.get('main_selected',False))==checked:return
-        self.snapshot();entry['main_selected']=checked;self.renumber()
+        self.snapshot('메인 지정' if checked else '메인 해제');entry['main_selected']=checked;self.renumber()
         self.list.setFocus(Qt.FocusReason.OtherFocusReason)
     def selection_changed(self,*args):
         self.sync_main_check()
+        self.canvas.reset_view()
         self.canvas.clone_source=None;self.canvas.drawing_clone=False
         self.canvas.active=-1; self.original.setChecked(False)
         entry=self.current()
@@ -629,12 +687,12 @@ class Window(QMainWindow):
         if event[0]=='clone_source':
             self.status.setText('도장 기준점 선택 완료 · 지울 부위를 드래그하세요.');return
         if event[0]=='clone_start':
-            self.snapshot();entry.setdefault('clones',[]).append(event[1]);self.canvas.active=-1
+            self.snapshot('복제 도장');entry.setdefault('clones',[]).append(event[1]);self.canvas.active=-1
         elif event[0]=='clone_move':
             if not entry.get('clones'):return
             entry['clones'][-1]['points']=event[1]
         elif event[0]=='brush_start':
-            self.snapshot()
+            self.snapshot('브러시 모자이크 추가')
             region={'kind':'brush','points':event[1]['points'],'radius':event[1]['radius'],'strength':self.strength.value()}
             self.brush_bounds(region); entry['regions'].append(region); self.canvas.active=len(entry['regions'])-1
         elif event[0]=='brush_move':
@@ -642,7 +700,7 @@ class Window(QMainWindow):
             region=entry['regions'][self.canvas.active]
             region['points']=event[1]; self.brush_bounds(region)
         elif event[0]=='add':
-            self.snapshot(); entry['regions'].append({'rect':event[1],'strength':self.strength.value()}); self.canvas.active=len(entry['regions'])-1
+            self.snapshot('박스 모자이크 추가'); entry['regions'].append({'rect':event[1],'strength':self.strength.value()}); self.canvas.active=len(entry['regions'])-1
         else:
             self.canvas.active=event[1]
             if event[1]>=0:
@@ -656,7 +714,7 @@ class Window(QMainWindow):
                         min(1,max(p[0] for p in points)+radius),min(1,max(p[1] for p in points)+radius*aspect)]
     def begin_strength_change(self):
         entry=self.current()
-        if entry and 0<=self.canvas.active<len(entry['regions']):self.snapshot()
+        if entry and 0<=self.canvas.active<len(entry['regions']):self.snapshot('모자이크 강도 변경')
     def strength_action(self,*args):
         if not self.strength.isSliderDown(): self.begin_strength_change()
     def strength_changed(self,value):
@@ -680,7 +738,7 @@ class Window(QMainWindow):
         changed=[entry for entry in entries if any(r['strength']!=strength for r in entry['regions'])]
         if not changed:
             self.status.setText('변경할 모자이크 강도가 없습니다.');return
-        self.snapshot()
+        self.snapshot(f'모자이크 강도 일괄 변경 · {len(changed)}장')
         for entry in changed:
             for region in entry['regions']:region['strength']=strength
         # Updating the slider here must not create a separate edit or history entry.
@@ -690,7 +748,7 @@ class Window(QMainWindow):
     def remove_region(self):
         entry=self.current(); i=self.canvas.active
         if entry and 0<=i<len(entry['regions']):
-            self.snapshot(); entry['regions'].pop(i); self.canvas.active=-1; self.render(); self.renumber()
+            self.snapshot('모자이크 영역 삭제'); entry['regions'].pop(i); self.canvas.active=-1; self.render(); self.renumber()
     def save_project(self):
         if self.project:return self.write_project(self.project)
         return self.save_project_as()
@@ -737,7 +795,7 @@ class Window(QMainWindow):
                     if r.get('kind')=='brush':
                         if not isinstance(r.get('points'),list) or not r['points'] or not 0<r.get('radius',0)<=.1:raise ValueError('잘못된 브러시 영역')
                         if not all(len(point)==2 and all(isinstance(v,(int,float)) and 0<=v<=1 for v in point) for point in r['points']):raise ValueError('잘못된 브러시 좌표')
-            self.populate(entries); self.history=[]; self.project=path; self.dirty=False
+            self.populate(entries); self.history=[]; self.history_labels=[];self.update_history_panel(); self.project=path; self.dirty=False
         except Exception as exc:QMessageBox.warning(self,'열기 실패',str(exc))
     def choose_export_folder(self):
         folder=QFileDialog.getExistingDirectory(self,'결과를 저장할 상위 폴더',self.export_folder)
@@ -792,6 +850,9 @@ class Window(QMainWindow):
     def closeEvent(self,event):
         if self.busy:QMessageBox.information(self,'내보내기 중','내보내기가 끝난 후 종료하세요.'); event.ignore(); return
         if not self.confirm_discard():event.ignore(); return
+        self.settings.setValue('layout/splitter',self.splitter.saveState())
+        self.settings.setValue('layout/windowState',self.saveState())
+        self.settings.sync()
         self.pool.waitForDone(); self.preview_pool.waitForDone(); event.accept()
 
 if __name__=='__main__':
