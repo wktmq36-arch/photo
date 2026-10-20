@@ -368,7 +368,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.31'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.32'); self.resize(1400,900)
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
         self.tool_sizes={name:max(5,min(200,self.settings.value('tools/sizes/'+name,legacy_size,type=int))) for name in ['box','brush','clone']}
@@ -492,7 +492,9 @@ class Window(QMainWindow):
         splitter.handle(1).setCursor(Qt.CursorShape.SizeHorCursor)
         splitter.handle(1).setToolTip('좌우로 드래그해서 썸네일과 미리보기 너비 조절')
         self.progress=QProgressBar(); self.progress.hide(); layout.addWidget(self.progress)
-        self.status=QLabel('원본을 보존하며, 결과 파일에는 메타데이터를 저장하지 않습니다.'); layout.addWidget(self.status)
+        footer=QHBoxLayout();layout.addLayout(footer)
+        self.status=QLabel('원본을 보존하며, 결과 파일에는 메타데이터를 저장하지 않습니다.'); footer.addWidget(self.status,1)
+        self.bottom_selection_count=QLabel('선택 0장 / 전체 0장');footer.addWidget(self.bottom_selection_count)
         self.list.dropped.connect(self.add_paths); self.list.currentItemChanged.connect(self.selection_changed)
         self.list.reordering.connect(lambda:self.snapshot('그림 순서 변경')); self.list.reordered.connect(self.order_changed); self.canvas.selected.connect(self.region_event)
         self.strength.valueChanged.connect(self.strength_changed)
@@ -729,7 +731,9 @@ class Window(QMainWindow):
         self.main_check.setChecked(bool(entry and entry.get('main_selected',False)))
         self.main_check.blockSignals(False)
     def update_selection_count(self):
-        self.selection_count.setText(f'선택 {len(self.list.selectedItems())}장')
+        count=len(self.list.selectedItems())
+        self.selection_count.setText(f'선택 {count}장')
+        if hasattr(self,'bottom_selection_count'):self.bottom_selection_count.setText(f'선택 {count}장 / 전체 {self.list.count()}장')
     def thumbnail_context_menu(self,pos):
         row=self.list.row_at(pos)
         if row>=0 and not self.list.item(row).isSelected():
