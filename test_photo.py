@@ -464,4 +464,31 @@ class Tests(unittest.TestCase):
    self.assertEqual(len(w.current()['clones']),1)
    while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
    w.dirty=False;w.close()
+ def test_thumbnail_whole_cell_hover_click_and_modifiers(self):
+  from PySide6.QtCore import Qt,QPoint
+  from PySide6.QtTest import QTest
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths=[]
+   for i in range(12):
+    path=Path(d)/f'{i}.png';Image.new('RGB',(30,180) if i%2 else (180,30),(i*10,30,50)).save(path);paths.append(str(path))
+   w=Window();w.show();w.activateWindow();w.add_paths(paths);deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   view=w.list;viewport=view.viewport()
+   for row in range(6):
+    cell=view.cell_rect(row)
+    for point in [cell.topLeft()+QPoint(3,3),cell.topRight()+QPoint(-3,3),cell.bottomLeft()+QPoint(3,-3),cell.bottomRight()+QPoint(-3,-3),cell.center()]:
+     QTest.mouseMove(viewport,point);app.processEvents();self.assertEqual(view.hover_row,row)
+     QTest.mouseClick(viewport,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,point);app.processEvents()
+     self.assertEqual(view.currentRow(),row);self.assertEqual(len(view.selectedItems()),1)
+     self.assertEqual(w.current()['path'],paths[row]);self.assertEqual(w.title.text(),Path(paths[row]).name)
+   QTest.mouseClick(viewport,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,view.cell_rect(0).bottomLeft()+QPoint(2,-2))
+   QTest.mouseClick(viewport,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.ControlModifier,view.cell_rect(2).bottomRight()+QPoint(-2,-2))
+   self.assertEqual([view.row(item) for item in view.selectedItems()],[0,2])
+   QTest.mouseClick(viewport,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.ShiftModifier,view.cell_rect(4).topLeft()+QPoint(2,2))
+   self.assertEqual(sorted(view.row(item) for item in view.selectedItems()),[2,3,4])
+   view.scrollToItem(view.item(11));app.processEvents()
+   point=view.cell_rect(11).center();QTest.mouseClick(viewport,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,point)
+   self.assertEqual(view.currentRow(),11);self.assertEqual(len(view.selectedItems()),1)
+   w.dirty=False;w.close()
 if __name__=='__main__':unittest.main()

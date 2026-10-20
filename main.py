@@ -1,7 +1,7 @@
 import sys, json, uuid, copy, time
 from pathlib import Path
 from collections import OrderedDict
-from PySide6.QtCore import Qt, QSize, QRectF, Signal, QObject, QRunnable, QThreadPool, QTimer, QMimeData, QItemSelectionModel, QSettings
+from PySide6.QtCore import Qt, QSize, QRect, QRectF, Signal, QObject, QRunnable, QThreadPool, QTimer, QMimeData, QItemSelectionModel, QSettings
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKeySequence, QFontDatabase, QFont, QShortcut, QDrag
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem,
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
@@ -29,6 +29,8 @@ MOSAIC_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 MAIN_ROLE = int(Qt.ItemDataRole.UserRole) + 2
 
 class ThumbnailDelegate(QStyledItemDelegate):
+    def sizeHint(self,option,index):
+        return QSize(164,150)
     def paint(self,painter,option,index):
         super().paint(painter,option,index)
         if not index.data(MOSAIC_ROLE) and not index.data(MAIN_ROLE):return
@@ -52,6 +54,7 @@ class ImageList(QListWidget):
         self.setItemDelegate(ThumbnailDelegate(self))
         self.setViewMode(QListWidget.ViewMode.IconMode)
         self.setIconSize(QSize(140, 110)); self.setGridSize(QSize(164, 150))
+        self.setUniformItemSizes(True)
         self.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.setMovement(QListWidget.Movement.Static)
         self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
@@ -61,18 +64,44 @@ class ImageList(QListWidget):
         self.setSpacing(5); self.setAcceptDrops(True)
         self.setSelectionRectVisible(False)
         self.empty_press=False
+        self.hover_row=-1;self.selection_anchor=None;self.collapse_on_release=None
         self.press_position=None; self.drag_ids=[]; self.dragging=False; self.drop_target=None
         self.setMouseTracking(True)
+    def cell_rect(self,row):
+        rect=self.visualItemRect(self.item(row))
+        return QRect(round(rect.x()+rect.width()/2-self.gridSize().width()/2),rect.top(),self.gridSize().width(),self.gridSize().height())
+    def row_at(self,pos):
+        if not self.viewport().rect().contains(pos):return -1
+        for row in range(self.count()):
+            if self.cell_rect(row).contains(pos):return row
+        return -1
     def mousePressEvent(self,event):
-        self.empty_press=not self.indexAt(event.position().toPoint()).isValid()
-        self.press_position=None; self.dragging=False; self.drop_target=None
-        if self.empty_press:
-            if not event.modifiers():self.clearSelection()
-            event.accept(); return
-        super().mousePressEvent(event)
-        if event.button()==Qt.MouseButton.LeftButton:
-            self.press_position=event.position().toPoint()
-            self.drag_ids=[self.item(row).data(Qt.ItemDataRole.UserRole) for row in range(self.count()) if self.item(row).isSelected()]
+        if event.button()!=Qt.MouseButton.LeftButton:
+            super().mousePressEvent(event);return
+        pos=event.position().toPoint();row=self.row_at(pos)
+        self.press_position=None;self.dragging=False;self.drop_target=None;self.collapse_on_release=None
+        self.empty_press=row<0
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        if row<0:event.accept();return
+        item=self.item(row);mods=event.modifiers()
+        control=bool(mods & Qt.KeyboardModifier.ControlModifier)
+        shift=bool(mods & Qt.KeyboardModifier.ShiftModifier)
+        if shift:
+            anchor=next((i for i in range(self.count()) if self.item(i).data(Qt.ItemDataRole.UserRole)==self.selection_anchor),max(0,self.currentRow()))
+            if not control:self.clearSelection()
+            for i in range(min(anchor,row),max(anchor,row)+1):self.item(i).setSelected(True)
+        elif control:
+            item.setSelected(not item.isSelected());self.selection_anchor=item.data(Qt.ItemDataRole.UserRole)
+        elif item.isSelected():
+            self.collapse_on_release=item.data(Qt.ItemDataRole.UserRole)
+            self.selection_anchor=item.data(Qt.ItemDataRole.UserRole)
+        else:
+            self.clearSelection();item.setSelected(True);self.selection_anchor=item.data(Qt.ItemDataRole.UserRole)
+        self.setCurrentItem(item,QItemSelectionModel.SelectionFlag.NoUpdate)
+        if item.isSelected():
+            self.press_position=pos
+            self.drag_ids=[self.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.count()) if self.item(i).isSelected()]
+        self.itemPressed.emit(item);self.viewport().update();event.accept()
     def target_at(self,pos):
         if not self.count():return 0
         # Pick the visual row by Y first. X must never pull a row-end drop
@@ -94,6 +123,8 @@ class ImageList(QListWidget):
         self.drop_marker=(max(3,min(self.viewport().width()-3,marker)),rect.top(),rect.bottom())
         return target
     def mouseMoveEvent(self,event):
+        hover=self.row_at(event.position().toPoint())
+        if hover!=self.hover_row:self.hover_row=hover;self.viewport().update()
         if self.press_position is not None:
             pos=event.position().toPoint()
             if not self.dragging and (pos-self.press_position).manhattanLength()>=QApplication.startDragDistance():
@@ -104,21 +135,38 @@ class ImageList(QListWidget):
                 elif pos.y()>self.viewport().height()-30:bar.setValue(bar.value()+24)
                 self.drop_target=self.target_at(pos); self.viewport().update()
             event.accept(); return
-        if self.empty_press:event.accept(); return
-        super().mouseMoveEvent(event)
+        event.accept()
     def mouseReleaseEvent(self,event):
+        if event.button()!=Qt.MouseButton.LeftButton:
+            super().mouseReleaseEvent(event);return
         if self.dragging:
-            target=self.target_at(event.position().toPoint()); ids=self.drag_ids[:]
-            self.press_position=None; self.dragging=False; self.drop_target=None
-            self.viewport().unsetCursor(); self.move_ids(ids,target); self.viewport().update()
-            self.setState(QAbstractItemView.State.NoState)
-            event.accept(); return
-        self.press_position=None
-        if self.empty_press:
-            self.empty_press=False; event.accept(); return
-        super().mouseReleaseEvent(event)
+            target=self.target_at(event.position().toPoint());ids=self.drag_ids[:]
+            self.press_position=None;self.dragging=False;self.drop_target=None;self.collapse_on_release=None
+            self.viewport().unsetCursor();self.move_ids(ids,target)
+            self.hover_row=self.row_at(event.position().toPoint())
+        else:
+            row=self.row_at(event.position().toPoint())
+            if self.collapse_on_release is not None and row>=0:
+                item=self.item(row)
+                if item.data(Qt.ItemDataRole.UserRole)==self.collapse_on_release:
+                    self.clearSelection();item.setSelected(True)
+            if row>=0 and not self.empty_press:self.itemClicked.emit(self.item(row))
+        self.press_position=None;self.empty_press=False;self.collapse_on_release=None
+        self.setState(QAbstractItemView.State.NoState);self.viewport().update();event.accept()
+    def leaveEvent(self,event):
+        self.hover_row=-1;self.viewport().update();super().leaveEvent(event)
     def paintEvent(self,event):
         super().paintEvent(event)
+        painter=QPainter(self.viewport())
+        for row in range(self.count()):
+            rect=self.cell_rect(row).adjusted(2,2,-2,-2)
+            if not rect.intersects(self.viewport().rect()):continue
+            selected=self.item(row).isSelected();hover=row==self.hover_row
+            if selected or hover:
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.setPen(QPen(QColor('#62bcff' if selected else '#a3d5ff'),3 if selected else 2))
+                painter.drawRoundedRect(rect,5,5)
+        painter.end()
         if self.drop_target is None or not self.count():return
         painter=QPainter(self.viewport()); painter.setPen(QPen(QColor('#ffab40'),4))
         if hasattr(self,'drop_marker'):
@@ -239,7 +287,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.13'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.14'); self.resize(1400,900)
         self.settings=QSettings('PhotoOrganizer','Photo')
         self.export_folder=str(self.settings.value('export/folder',''))
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.dirty=False; self.project=None
