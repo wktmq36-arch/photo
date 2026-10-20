@@ -2,10 +2,10 @@ import sys, json, uuid, copy, time
 from pathlib import Path
 from collections import OrderedDict
 from PySide6.QtCore import Qt, QSize, QRect, QRectF, QPointF, Signal, QObject, QRunnable, QThreadPool, QTimer, QMimeData, QItemSelectionModel, QSettings
-from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKeySequence, QFontDatabase, QFont, QShortcut, QDrag
+from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKeySequence, QFontDatabase, QFont, QShortcut, QDrag, QIcon
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem,
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
-    QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu, QDockWidget)
+    QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu, QDockWidget, QToolButton, QButtonGroup)
 from exporting import prepare_output
 from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, export_image, export_pair
 
@@ -13,6 +13,43 @@ def to_qimage(image):
     rgba = image.convert('RGBA')
     return QImage(rgba.tobytes(), rgba.width, rgba.height, rgba.width * 4,
                   QImage.Format.Format_RGBA8888).copy()
+
+def tool_icon(index):
+    pixmap=QPixmap(64,64);pixmap.setDevicePixelRatio(2);pixmap.fill(Qt.GlobalColor.transparent)
+    painter=QPainter(pixmap);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(QPen(QColor('#205a91'),2));painter.setBrush(Qt.BrushStyle.NoBrush)
+    if index==0:
+        painter.setPen(QPen(QColor('#205a91'),2,Qt.PenStyle.DashLine));painter.drawRect(5,6,22,20)
+    elif index==1:
+        painter.setPen(QPen(QColor('#205a91'),5,Qt.PenStyle.SolidLine,Qt.PenCapStyle.RoundCap));painter.drawLine(14,17,25,6)
+        painter.setPen(QPen(QColor('#205a91'),2));painter.setBrush(QColor('#205a91'));painter.drawEllipse(7,16,9,9)
+        painter.setPen(Qt.PenStyle.NoPen)
+        for x,y in [(4,25),(10,27),(3,19)]:painter.drawRect(x,y,4,4)
+    else:
+        painter.setBrush(QColor('#205a91'));painter.drawEllipse(11,3,10,10);painter.drawRect(13,11,6,8)
+        painter.drawRoundedRect(QRectF(6,18,20,7),2,2);painter.drawRect(4,27,24,3)
+    painter.end();return QIcon(pixmap)
+
+class ToolPicker(QWidget):
+    currentIndexChanged=Signal(int)
+    activated=Signal()
+    def __init__(self,parent=None):
+        super().__init__(parent);self.index=0;self.buttons=[];self.group=QButtonGroup(self);self.group.setExclusive(True)
+        layout=QHBoxLayout(self);layout.setContentsMargins(0,0,0,0);layout.setSpacing(5)
+        for index,label in enumerate(['박스 모자이크','브러시 모자이크','복제 도장 (Alt+클릭으로 기준점)']):
+            button=QToolButton();button.setIcon(tool_icon(index));button.setIconSize(QSize(28,28));button.setCheckable(True)
+            button.setToolTip(label);button.setAccessibleName(label);button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setFixedSize(42,40);self.group.addButton(button,index);layout.addWidget(button);self.buttons.append(button)
+        self.buttons[0].setChecked(True)
+        self.setStyleSheet('QToolButton {border:1px solid #aab8c8;border-radius:5px;background:#edf2f7;} QToolButton:hover {background:#d9eaff;} QToolButton:checked {border:2px solid #287fce;background:#bbddff;}')
+        self.group.idClicked.connect(self.choose)
+    def choose(self,index):
+        self.setCurrentIndex(index);self.activated.emit()
+    def currentIndex(self):return self.index
+    def setCurrentIndex(self,index):
+        if not 0<=index<len(self.buttons):return
+        self.buttons[index].setChecked(True)
+        if self.index!=index:self.index=index;self.currentIndexChanged.emit(index)
 
 class Signals(QObject):
     done = Signal(object)
@@ -331,7 +368,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.24'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.25'); self.resize(1400,900)
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
         self.tool_sizes={name:max(5,min(200,self.settings.value('tools/sizes/'+name,legacy_size,type=int))) for name in ['box','brush','clone']}
@@ -405,8 +442,9 @@ class Window(QMainWindow):
         view_controls.addWidget(QLabel('휠: 확대/축소 · 가운데 버튼 드래그: 화면 이동'));view_controls.addStretch()
         brush_tools=QHBoxLayout(); rl.addLayout(brush_tools)
         brush_tools.addWidget(QLabel('도구'))
-        self.tool=QComboBox(); self.tool.addItems(['박스','브러시','복제 도장']); brush_tools.addWidget(self.tool)
+        self.tool=ToolPicker(); brush_tools.addWidget(self.tool)
         self.tool.currentIndexChanged.connect(self.change_tool)
+        self.tool.activated.connect(lambda:self.list.setFocus(Qt.FocusReason.OtherFocusReason))
         brush_tools.addWidget(QLabel('브러시 크기'))
         self.brush_size=QSlider(Qt.Orientation.Horizontal); self.brush_size.setRange(5,200); self.brush_size.setValue(50)
         self.brush_size.valueChanged.connect(self.change_brush_size)

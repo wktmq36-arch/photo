@@ -735,4 +735,19 @@ class Tests(unittest.TestCase):
   self.assertEqual(reopened.tool.currentIndex(),1);self.assertEqual(reopened.brush_size.value(),90)
   reopened.tool.setCurrentIndex(2);self.assertEqual(reopened.brush_size.value(),15)
   reopened.tool.setCurrentIndex(0);self.assertEqual(reopened.brush_size.value(),25);reopened.close()
+ def test_icon_tool_buttons_exclusive_and_restore_sizes(self):
+  from PySide6.QtCore import Qt
+  from PySide6.QtTest import QTest
+  app=QApplication.instance() or QApplication([])
+  w=Window();w.show();w.activateWindow();app.processEvents()
+  QTest.mouseClick(w.tool.buttons[1],Qt.MouseButton.LeftButton);w.brush_size.setValue(85)
+  QTest.mouseClick(w.tool.buttons[2],Qt.MouseButton.LeftButton);w.brush_size.setValue(12)
+  QTest.mouseClick(w.tool.buttons[1],Qt.MouseButton.LeftButton)
+  self.assertEqual(w.canvas.tool,'brush');self.assertEqual(w.brush_size.value(),85)
+  self.assertEqual([button.isChecked() for button in w.tool.buttons],[False,True,False])
+  self.assertTrue(all(not button.icon().isNull() for button in w.tool.buttons))
+  self.assertIs(app.focusWidget(),w.list)
+  QTest.mouseClick(w.tool.buttons[2],Qt.MouseButton.LeftButton)
+  self.assertEqual(w.brush_size.value(),12);self.assertEqual(w.canvas.tool,'clone')
+  w.close()
 if __name__=='__main__':unittest.main()
