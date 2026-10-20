@@ -287,10 +287,11 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.16'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.17'); self.resize(1400,900)
         self.settings=QSettings('PhotoOrganizer','Photo')
         self.export_folder=str(self.settings.value('export/folder',''))
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.dirty=False; self.project=None
+        self.thumb_cache=OrderedDict();self.thumb_waiters={};self.thumb_cache_bytes=0
         self.pool=QThreadPool(self); self.pool.setMaxThreadCount(4)
         self.preview_pool=QThreadPool(self); self.preview_pool.setMaxThreadCount(2)
         self.export_pool=QThreadPool(self); self.export_pool.setMaxThreadCount(1)
@@ -400,10 +401,10 @@ class Window(QMainWindow):
         if [e['id'] for e in state]==[e['id'] for e in self.ordered()]:
             self.entries={e['id']:e for e in state}
         else:
-            self.populate(state)
+            self.restore_list(state)
         for row in range(self.list.count()):
             if self.list.item(row).data(Qt.ItemDataRole.UserRole)==current_id:
-                self.list.setCurrentRow(row); break
+                self.list.setCurrentRow(row,QItemSelectionModel.SelectionFlag.ClearAndSelect); break
         entry=self.current()
         self.canvas.active=min(active,len(entry['regions'])-1) if entry else -1
         if entry and self.canvas.active>=0:
@@ -412,29 +413,61 @@ class Window(QMainWindow):
             self.strength.blockSignals(False)
             self.value.setText(str(self.strength.value()))
         self.original.setChecked(False); self.render(); self.renumber(); self.dirty=True
+    def restore_list(self,entries):
+        wanted={entry['id'] for entry in entries}
+        scroll=self.list.verticalScrollBar().value()
+        self.list.blockSignals(True);self.list.setUpdatesEnabled(False)
+        try:
+            for row in reversed(range(self.list.count())):
+                if self.list.item(row).data(Qt.ItemDataRole.UserRole) not in wanted:self.list.takeItem(row)
+            self.entries={entry['id']:entry for entry in entries}
+            existing={self.list.item(row).data(Qt.ItemDataRole.UserRole):self.list.item(row) for row in range(self.list.count())}
+            for row,entry in enumerate(entries):
+                item=existing.get(entry['id'])
+                if item is None:self.insert_entry(entry,row)
+                elif self.list.row(item)!=row:
+                    item=self.list.takeItem(self.list.row(item));self.list.insertItem(row,item)
+            self.list.doItemsLayout();self.list.verticalScrollBar().setValue(scroll)
+        finally:
+            self.list.blockSignals(False);self.list.setUpdatesEnabled(True)
+        self.selection_changed()
     def populate(self,entries):
         self.list.clear(); self.entries={}
         for entry in entries: self.insert_entry(entry)
         self.renumber()
         if self.list.count(): self.list.setCurrentRow(0)
         else: self.canvas.pixmap=None; self.canvas.update()
-    def insert_entry(self,entry):
+    def insert_entry(self,entry,row=None):
         entry.setdefault('main_selected',False)
         entry.setdefault('clones',[])
         self.entries[entry['id']]=entry
-        item=QListWidgetItem(Path(entry['path']).name); item.setData(Qt.ItemDataRole.UserRole,entry['id']); item.setToolTip(entry['path']); self.list.addItem(item)
+        item=QListWidgetItem(Path(entry['path']).name); item.setData(Qt.ItemDataRole.UserRole,entry['id']); item.setToolTip(entry['path'])
+        if row is None:self.list.addItem(item)
+        else:self.list.insertItem(row,item)
         path=entry['path']
-        self.run_job(self.pool,lambda:self.load_thumb(path),lambda result,eid=entry['id']:self.thumb_ready(eid,result))
+        try:
+            info=Path(path).stat();key=(path,info.st_size,info.st_mtime_ns)
+        except OSError:key=(path,None,None)
+        if key in self.thumb_cache:
+            self.thumb_cache.move_to_end(key);item.setIcon(QPixmap.fromImage(self.thumb_cache[key]));return
+        if key in self.thumb_waiters:
+            self.thumb_waiters[key].add(entry['id']);return
+        self.thumb_waiters[key]={entry['id']}
+        self.run_job(self.pool,lambda:self.load_thumb(path),lambda result:self.thumb_ready(key,result))
     @staticmethod
     def load_thumb(path):
         image=read_pixels(path); image.thumbnail((140,110)); return to_qimage(image)
-    def thumb_ready(self,eid,result):
+    def thumb_ready(self,key,result):
+        waiters=self.thumb_waiters.pop(key,set())
         if not result[0]:
-            if eid in self.entries: self.status.setText('읽기 실패: '+self.entries[eid]['path'])
+            if any(eid in self.entries for eid in waiters):self.status.setText('읽기 실패: '+key[0])
             return
-        for i in range(self.list.count()):
-            item=self.list.item(i)
-            if item.data(Qt.ItemDataRole.UserRole)==eid: item.setIcon(QPixmap.fromImage(result[1])); break
+        image=result[1];self.thumb_cache[key]=image;self.thumb_cache_bytes+=image.sizeInBytes()
+        while self.thumb_cache_bytes>128*1024*1024 and len(self.thumb_cache)>1:
+            _,old=self.thumb_cache.popitem(last=False);self.thumb_cache_bytes-=old.sizeInBytes()
+        for row in range(self.list.count()):
+            item=self.list.item(row)
+            if item.data(Qt.ItemDataRole.UserRole) in waiters:item.setIcon(QPixmap.fromImage(image))
     def add_dialog(self):
         files,_=QFileDialog.getOpenFileNames(self,'그림 추가','','Images (*.webp *.png *.jpg *.jpeg *.bmp *.tif *.tiff)'); self.add_paths(files)
     def folder_dialog(self):

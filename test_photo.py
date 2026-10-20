@@ -548,4 +548,29 @@ class Tests(unittest.TestCase):
    view.selectAll();QTest.keyClick(view,Qt.Key.Key_Left);app.processEvents()
    self.assertEqual([view.row(item) for item in view.selectedItems()],[2])
    w.dirty=False;w.close()
+ def test_delete_undo_reuses_thumbnails_without_loading(self):
+  from unittest.mock import patch
+  from PySide6.QtCore import Qt
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths=[]
+   for i in range(600):
+    p=Path(d)/f'{i}.png';Image.new('RGB',(40,60),'red').save(p);paths.append(str(p))
+   w=Window();w.add_paths(paths);deadline=time.monotonic()+30
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   keep={w.list.item(i).data(Qt.ItemDataRole.UserRole):w.list.item(i) for i in range(600) if i not in [537,538,539]}
+   w.list.clearSelection()
+   for i in [537,538,539]:w.list.item(i).setSelected(True)
+   w.remove_selected();self.assertEqual(w.list.count(),597)
+   with patch.object(w,'load_thumb',wraps=w.load_thumb) as reader:
+    w.undo();app.processEvents()
+    reader.assert_not_called()
+    self.assertEqual(w.list.count(),600)
+    for i in range(600):
+     item=w.list.item(i);eid=item.data(Qt.ItemDataRole.UserRole)
+     if eid in keep:self.assertIs(item,keep[eid])
+     self.assertFalse(item.icon().isNull())
+    self.assertFalse(w.thumb_waiters)
+    w.list.selectAll();w.remove_selected();w.undo();app.processEvents();reader.assert_not_called()
+   w.dirty=False;w.close()
 if __name__=='__main__':unittest.main()
