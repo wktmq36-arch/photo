@@ -525,4 +525,27 @@ class Tests(unittest.TestCase):
     QTest.mouseMove(w.canvas,end);QTest.mouseRelease(w.canvas,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,end)
     self.assertEqual(len(w.current()['regions']),1)
    w.dirty=False;w.close()
+ def test_arrow_after_drag_selects_only_one_thumbnail(self):
+  from PySide6.QtCore import Qt,QPoint
+  from PySide6.QtTest import QTest
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths=[]
+   for i in range(6):
+    p=Path(d)/f'{i}.png';Image.new('RGB',(80,60),'red').save(p);paths.append(str(p))
+   w=Window();w.show();w.activateWindow();w.add_paths(paths);deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   view=w.list;viewport=view.viewport()
+   start=view.cell_rect(0).center();target=view.cell_rect(2).topRight()+QPoint(-5,40)
+   QTest.mousePress(viewport,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,start)
+   QTest.mouseMove(viewport,target,30);QTest.mouseRelease(viewport,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,target)
+   self.assertEqual(view.currentRow(),2)
+   for key,row in [(Qt.Key.Key_Right,3),(Qt.Key.Key_Right,4),(Qt.Key.Key_Left,3)]:
+    QTest.keyClick(view,key);app.processEvents()
+    self.assertEqual(view.currentRow(),row)
+    self.assertEqual([view.row(item) for item in view.selectedItems()],[row])
+    self.assertEqual(w.title.text(),Path(w.current()['path']).name)
+   view.selectAll();QTest.keyClick(view,Qt.Key.Key_Left);app.processEvents()
+   self.assertEqual([view.row(item) for item in view.selectedItems()],[2])
+   w.dirty=False;w.close()
 if __name__=='__main__':unittest.main()

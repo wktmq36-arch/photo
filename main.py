@@ -287,7 +287,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.15'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.16'); self.resize(1400,900)
         self.settings=QSettings('PhotoOrganizer','Photo')
         self.export_folder=str(self.settings.value('export/folder',''))
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.dirty=False; self.project=None
@@ -481,7 +481,14 @@ class Window(QMainWindow):
             self.list.setCurrentRow(-1)
         self.list.blockSignals(False)
         self.renumber(); self.selection_changed()
-    def navigate(self,step):self.list.setCurrentRow(max(0,min(self.list.count()-1,self.list.currentRow()+step)))
+    def navigate(self,step):
+        if not self.list.count():return
+        row=max(0,min(self.list.count()-1,self.list.currentRow()+step))
+        self.list.setCurrentRow(row,QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        item=self.list.item(row)
+        self.list.selection_anchor=item.data(Qt.ItemDataRole.UserRole)
+        self.list.scrollToItem(item)
+        self.list.viewport().update()
     def sync_main_check(self):
         entry=self.current()
         self.main_check.blockSignals(True)
