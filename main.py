@@ -331,9 +331,13 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.22'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.23'); self.resize(1400,900)
         self.settings=QSettings('PhotoOrganizer','Photo')
         self.export_folder=str(self.settings.value('export/folder',''))
+        try:self.recent_projects=json.loads(str(self.settings.value('projects/recent','[]')))
+        except (ValueError,TypeError):self.recent_projects=[]
+        if not isinstance(self.recent_projects,list):self.recent_projects=[]
+        self.recent_projects=[path for path in self.recent_projects if isinstance(path,str)]
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.history_labels=[]; self.dirty=False; self.project=None
         self.thumb_cache=OrderedDict();self.thumb_waiters={};self.thumb_cache_bytes=0
         self.pool=QThreadPool(self); self.pool.setMaxThreadCount(4)
@@ -344,15 +348,17 @@ class Window(QMainWindow):
         top=QHBoxLayout(); layout.addLayout(top)
         for label,fn in [('파일 추가',self.add_dialog),('폴더 추가',self.folder_dialog),('작업 열기',self.load_project),('작업 저장',self.save_project),('실행 취소',self.undo),('목록에서 제외',self.remove_selected)]:
             button=QPushButton(label); button.clicked.connect(fn); top.addWidget(button)
-        self.history_dock=QDockWidget('작업 내역',self);self.history_dock.setObjectName('photoHistoryDock')
+        self.history_dock=QDockWidget('저장한 작업',self);self.history_dock.setObjectName('photoHistoryDock')
         self.history_dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea|Qt.DockWidgetArea.RightDockWidgetArea)
         history_body=QWidget();history_layout=QVBoxLayout(history_body)
-        self.history_summary=QLabel('현재 세션 · 실행 취소 가능 0건');history_layout.addWidget(self.history_summary)
+        self.history_summary=QLabel('저장한 작업 0개');history_layout.addWidget(self.history_summary)
         self.history_list=QListWidget();self.history_list.setMinimumWidth(170);history_layout.addWidget(self.history_list)
-        undo_button=QPushButton('실행 취소 (Ctrl+Z)');undo_button.clicked.connect(self.undo);history_layout.addWidget(undo_button)
+        self.history_list.itemClicked.connect(self.open_recent_project)
+        add_project_button=QPushButton('작업 파일 추가');add_project_button.clicked.connect(self.add_project_files);history_layout.addWidget(add_project_button)
+        find_projects_button=QPushButton('폴더에서 작업 찾기');find_projects_button.clicked.connect(self.find_projects);history_layout.addWidget(find_projects_button)
         self.history_dock.setWidget(history_body);self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,self.history_dock)
         self.resizeDocks([self.history_dock],[210],Qt.Orientation.Horizontal)
-        history_toggle=QPushButton('작업 내역');history_toggle.setCheckable(True);history_toggle.setChecked(True)
+        history_toggle=QPushButton('저장한 작업');history_toggle.setCheckable(True);history_toggle.setChecked(True)
         history_toggle.toggled.connect(self.history_dock.setVisible);self.history_dock.visibilityChanged.connect(history_toggle.setChecked)
         top.addWidget(history_toggle);self.history_toggle=history_toggle
         top.addStretch()
@@ -450,7 +456,7 @@ class Window(QMainWindow):
         self.clone_softness.setValue(self.settings.value('tools/softness',50,type=int))
         saved_layout=self.settings.value('layout/windowState')
         if saved_layout is not None:self.restoreState(saved_layout)
-        self.update_history_panel()
+        self.refresh_recent_projects()
         self.setAcceptDrops(True)
     def run_job(self,pool,fn,callback,priority=0):
         job=Job(fn,lambda result:self.job_done(job,callback,result)); self.jobs.add(job); pool.start(job,priority)
@@ -463,21 +469,44 @@ class Window(QMainWindow):
     def ordered(self): return [self.entries[self.list.item(i).data(Qt.ItemDataRole.UserRole)] for i in range(self.list.count())]
     def current(self):
         item=self.list.currentItem(); return self.entries.get(item.data(Qt.ItemDataRole.UserRole)) if item else None
-    def update_history_panel(self):
-        self.history_summary.setText(f'현재 세션 · 실행 취소 가능 {len(self.history)}건')
+    def refresh_recent_projects(self):
+        self.history_summary.setText(f'저장한 작업 {len(self.recent_projects)}개 · 클릭해서 열기')
         self.history_list.clear()
-        for label in reversed(self.history_labels):self.history_list.addItem(label)
-        if not self.history_labels:self.history_list.addItem('작업 내역이 없습니다.')
+        for path in self.recent_projects:
+            file=Path(path);name=file.name.removesuffix('.photo.json')
+            item=QListWidgetItem(name+('  [현재 작업]' if self.project==path else '')+('  [파일 없음]' if not file.is_file() else ''))
+            item.setData(Qt.ItemDataRole.UserRole,path);item.setToolTip(path);self.history_list.addItem(item)
+            if self.project==path:
+                font=item.font();font.setBold(True);item.setFont(font);self.history_list.setCurrentItem(item)
+        if not self.recent_projects:
+            empty=QListWidgetItem('저장하거나 연 작업이 여기에 표시됩니다.');empty.setFlags(Qt.ItemFlag.NoItemFlags);self.history_list.addItem(empty)
+    def remember_project(self,path):
+        path=str(Path(path).resolve())
+        self.recent_projects=([path]+[old for old in self.recent_projects if old!=path])[:100]
+        self.settings.setValue('projects/recent',json.dumps(self.recent_projects,ensure_ascii=False))
+        self.refresh_recent_projects()
+    def open_recent_project(self,item):
+        path=item.data(Qt.ItemDataRole.UserRole)
+        if not path or path==self.project:return
+        self.open_project(path)
+    def add_project_files(self):
+        paths,_=QFileDialog.getOpenFileNames(self,'저장한 작업 목록에 추가','','Photo project (*.photo.json)')
+        for path in reversed(paths):self.remember_project(path)
+    def find_projects(self):
+        folder=QFileDialog.getExistingDirectory(self,'작업 JSON이 저장된 폴더')
+        if not folder:return
+        paths=sorted(Path(folder).rglob('*.photo.json'),key=lambda path:path.stat().st_mtime_ns)
+        for path in paths:self.remember_project(path)
+        self.status.setText(f'저장한 작업 {len(paths)}개를 목록에 추가했습니다.')
     def snapshot(self,label='작업 변경'):
         entry=self.current()
         self.history.append((copy.deepcopy(self.ordered()),entry['id'] if entry else None,self.canvas.active))
         self.history=self.history[-30:];self.history_labels.append(label);self.history_labels=self.history_labels[-30:]
-        self.update_history_panel();self.dirty=True
+        self.dirty=True
     def undo(self):
         if not self.history: return
         state,current_id,active=self.history.pop()
         if self.history_labels:self.history_labels.pop()
-        self.update_history_panel()
         # Editing a region does not require reloading every thumbnail.
         if [e['id'] for e in state]==[e['id'] for e in self.ordered()]:
             self.entries={e['id']:e for e in state}
@@ -760,7 +789,7 @@ class Window(QMainWindow):
         if not path:return False
         try:
             temp=Path(path+'.tmp'); temp.write_text(json.dumps({'version':1,'images':self.ordered()},ensure_ascii=False,indent=2),encoding='utf-8'); temp.replace(path)
-            self.project=path; self.dirty=False; self.status.setText('작업 저장 완료');return True
+            self.project=str(Path(path).resolve()); self.dirty=False;self.remember_project(self.project); self.status.setText('작업 저장 완료');return True
         except Exception as exc:
             QMessageBox.warning(self,'저장 실패',str(exc));return False
     def confirm_discard(self):
@@ -776,9 +805,11 @@ class Window(QMainWindow):
         if result==buttons.Save:return self.save_project()
         return result==buttons.Discard
     def load_project(self):
-        if not self.confirm_discard():return
         path,_=QFileDialog.getOpenFileName(self,'작업 열기','','Photo project (*.photo.json)')
-        if not path:return
+        if path:return self.open_project(path)
+        return False
+    def open_project(self,path):
+        if not self.confirm_discard():return False
         try:
             data=json.loads(Path(path).read_text(encoding='utf-8')); entries=data['images']
             if data.get('version')!=1:raise ValueError('지원하지 않는 작업 파일입니다.')
@@ -795,8 +826,10 @@ class Window(QMainWindow):
                     if r.get('kind')=='brush':
                         if not isinstance(r.get('points'),list) or not r['points'] or not 0<r.get('radius',0)<=.1:raise ValueError('잘못된 브러시 영역')
                         if not all(len(point)==2 and all(isinstance(v,(int,float)) and 0<=v<=1 for v in point) for point in r['points']):raise ValueError('잘못된 브러시 좌표')
-            self.populate(entries); self.history=[]; self.history_labels=[];self.update_history_panel(); self.project=path; self.dirty=False
-        except Exception as exc:QMessageBox.warning(self,'열기 실패',str(exc))
+            self.populate(entries); self.history=[]; self.history_labels=[]; self.project=str(Path(path).resolve()); self.dirty=False
+            self.remember_project(self.project);return True
+        except Exception as exc:
+            QMessageBox.warning(self,'열기 실패',str(exc));return False
     def choose_export_folder(self):
         folder=QFileDialog.getExistingDirectory(self,'결과를 저장할 상위 폴더',self.export_folder)
         if not folder:return False

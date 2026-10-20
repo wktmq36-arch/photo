@@ -683,9 +683,8 @@ class Tests(unittest.TestCase):
    path=Path(d)/'history.png';Image.new('RGB',(80,60),'red').save(path)
    w=Window();w.show();w.add_paths([str(path)]);deadline=time.monotonic()+10
    while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
-   self.assertIn('그림 추가',w.history_list.item(0).text())
-   w.region_event(('add',[.1,.1,.6,.6]));self.assertIn('박스 모자이크',w.history_list.item(0).text())
-   w.undo();self.assertIn('그림 추가',w.history_list.item(0).text())
+   self.assertEqual(w.recent_projects,[])
+   w.region_event(('add',[.1,.1,.6,.6]));w.undo()
    w.history_dock.hide();w.splitter.setSizes([300,700]);app.processEvents()
    ratio=w.splitter.sizes()[0]/sum(w.splitter.sizes());w.dirty=False;w.close()
    reopened=Window();reopened.show();app.processEvents()
@@ -693,4 +692,36 @@ class Tests(unittest.TestCase):
    self.assertAlmostEqual(ratio,restored,delta=.04);self.assertTrue(reopened.history_dock.isHidden())
    reopened.history_toggle.click();app.processEvents();self.assertTrue(reopened.history_dock.isVisible())
    reopened.close()
+ def test_saved_project_sidebar_click_switch_and_persistence(self):
+  import json
+  from unittest.mock import patch
+  from PySide6.QtCore import Qt
+  from PySide6.QtTest import QTest
+  from PySide6.QtWidgets import QMessageBox
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   sources=[]
+   for i in range(2):
+    path=Path(d)/f'image{i}.png';Image.new('RGB',(80,60),'red').save(path);sources.append(str(path))
+   first=str(Path(d)/'first.photo.json');second=str(Path(d)/'second.photo.json')
+   w=Window();w.show();w.add_paths([sources[0]]);self.assertTrue(w.write_project(first))
+   w.populate([{'id':'second','path':sources[1],'regions':[]}]);self.assertTrue(w.write_project(second))
+   self.assertEqual(w.recent_projects,[second,first])
+   deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   item=w.history_list.item(1)
+   QTest.mouseClick(w.history_list.viewport(),Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,w.history_list.visualItemRect(item).center());app.processEvents()
+   self.assertEqual(w.project,first);self.assertEqual(w.current()['path'],sources[0])
+   w.main_check.setChecked(True)
+   with patch('main.QMessageBox.exec',return_value=QMessageBox.StandardButton.Cancel):w.open_recent_project(w.history_list.item(1))
+   self.assertEqual(w.project,first);self.assertTrue(w.dirty)
+   with patch('main.QMessageBox.exec',return_value=QMessageBox.StandardButton.Save):w.open_recent_project(w.history_list.item(1))
+   self.assertEqual(w.project,second)
+   self.assertTrue(json.loads(Path(first).read_text(encoding='utf-8'))['images'][0]['main_selected'])
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close()
+   reopened=Window();self.assertEqual(reopened.recent_projects,[second,first])
+   with patch('main.QMessageBox.warning') as warning:
+    self.assertFalse(reopened.open_project(str(Path(d)/'missing.photo.json')));warning.assert_called_once()
+   self.assertIsNone(reopened.project);reopened.close()
 if __name__=='__main__':unittest.main()
