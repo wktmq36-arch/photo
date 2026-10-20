@@ -313,7 +313,7 @@ class Tests(unittest.TestCase):
     w.export();deadline=time.monotonic()+10
     while (w.busy or w.jobs) and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
     warning.assert_called_once();self.assertFalse(w.busy)
-   self.assertFalse(stale.exists());self.assertFalse((output/'a_uncen').exists())
+   self.assertTrue(stale.exists());self.assertTrue((output/'a_uncen').exists())
    self.assertTrue((output/'a_cen/001.png').exists())
    w.dirty=False;w.close()
  def test_main_checkbox_persists_and_undoes(self):
@@ -372,12 +372,12 @@ class Tests(unittest.TestCase):
   from exporting import prepare_output
   from unittest.mock import Mock
   with tempfile.TemporaryDirectory() as d:
-   parent=Path(d);dest=parent/'a';dest.mkdir();nested=dest/'old';nested.mkdir();(nested/'old.txt').write_text('old')
+   parent=Path(d);dest=parent/'a';dest.mkdir();nested=dest/'a_cen';nested.mkdir();(nested/'old.txt').write_text('old')
    outside=parent/'keep.txt';outside.write_text('keep');notice=Mock(return_value=True)
    result=prepare_output(parent,'a',[outside],notice)
-   self.assertEqual(result,dest.resolve());notice.assert_called_once_with(result)
+   self.assertEqual(result,dest.resolve());notice.assert_called_once_with([nested.resolve()])
    self.assertEqual(list(dest.iterdir()),[]);self.assertEqual(outside.read_text(),'keep')
-   source=dest/'source.webp';source.write_bytes(b'original');notice.reset_mock()
+   nested.mkdir();source=nested/'source.webp';source.write_bytes(b'original');notice.reset_mock()
    with self.assertRaises(ValueError):prepare_output(parent,'a',[source],notice)
    self.assertEqual(source.read_bytes(),b'original');notice.assert_not_called()
    with self.assertRaises(ValueError):prepare_output(parent,'..',[],notice)
@@ -863,5 +863,43 @@ class Tests(unittest.TestCase):
    with patch('main.QMessageBox.exec',return_value=QMessageBox.StandardButton.No):self.assertFalse(w.confirm_output_replacement(dest))
    deadline=time.monotonic()+10
    while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close()
+ def test_replace_only_selected_output_folders(self):
+  from exporting import prepare_output
+  from unittest.mock import Mock
+  with tempfile.TemporaryDirectory() as d:
+   parent=Path(d)
+   for mask in range(1,8):
+    name=f'case{mask}';root=parent/name;root.mkdir()
+    unrelated=root/'keep.txt';unrelated.write_bytes(b'keep')
+    choices={key:bool(mask&(1<<i)) for i,key in enumerate(['cen','uncen','main'])}
+    for kind in choices:
+     folder=root/(name+'_'+kind);folder.mkdir();(folder/'old.bin').write_bytes(kind.encode())
+    notice=Mock(return_value=True)
+    prepare_output(parent,name,[],notice,choices)
+    for kind,selected in choices.items():
+     folder=root/(name+'_'+kind)
+     if selected:self.assertFalse(folder.exists())
+     else:self.assertEqual((folder/'old.bin').read_bytes(),kind.encode())
+    self.assertEqual(unrelated.read_bytes(),b'keep')
+    self.assertEqual(set(notice.call_args.args[0]),{root/(name+'_'+kind) for kind,selected in choices.items() if selected})
+ def test_main_only_reexport_preserves_cen_and_uncen(self):
+  from unittest.mock import patch
+  from PySide6.QtWidgets import QMessageBox
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   source=Path(d)/'source.webp';Image.new('RGB',(80,60),'red').save(source)
+   w=Window();w.add_paths([str(source)]);w.main_check.setChecked(True);w.export_folder=d
+   with patch('main.QMessageBox.information'):
+    w.export();deadline=time.monotonic()+10
+    while (w.busy or w.jobs) and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   root=Path(d)/'a';before={str(p.relative_to(root)):p.read_bytes() for folder in ['a_cen','a_uncen'] for p in (root/folder).iterdir()}
+   stale=root/'a_main/999.png';stale.write_bytes(b'old')
+   w.output_checks['cen'].setChecked(False);w.output_checks['uncen'].setChecked(False)
+   with patch('main.QMessageBox.exec',return_value=QMessageBox.StandardButton.Yes),patch('main.QMessageBox.information'):
+    w.export();deadline=time.monotonic()+10
+    while (w.busy or w.jobs) and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   self.assertFalse(stale.exists());self.assertTrue((root/'a_main/001.png').exists())
+   for relative,data in before.items():self.assertEqual((root/relative).read_bytes(),data)
    w.dirty=False;w.close()
 if __name__=='__main__':unittest.main()
