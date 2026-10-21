@@ -6,6 +6,25 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_strength_slider_click_position_and_wheel_steps(self):
+  from main import StrengthSlider
+  from PySide6.QtCore import Qt,QPoint,QPointF
+  from PySide6.QtGui import QWheelEvent
+  from PySide6.QtTest import QTest
+  app=QApplication.instance() or QApplication([])
+  slider=StrengthSlider();slider.setRange(2,100);slider.resize(400,30);slider.show();app.processEvents()
+  slider.setValue(2);QTest.mouseClick(slider,Qt.MouseButton.LeftButton,pos=QPoint(300,15))
+  self.assertTrue(74<=slider.value()<=78);self.assertFalse(slider.isSliderDown())
+  slider.setValue(20);QTest.mouseClick(slider,Qt.MouseButton.LeftButton,pos=QPoint(200,15))
+  self.assertTrue(50<=slider.value()<=52)
+  def wheel(delta):
+   event=QWheelEvent(QPointF(200,15),QPointF(slider.mapToGlobal(QPoint(200,15))),QPoint(),QPoint(0,delta),Qt.MouseButton.NoButton,Qt.KeyboardModifier.ControlModifier,Qt.ScrollPhase.NoScrollPhase,False)
+   QApplication.sendEvent(slider,event)
+  slider.setValue(20);wheel(120);self.assertEqual(slider.value(),21)
+  wheel(-120);self.assertEqual(slider.value(),20)
+  wheel(60);self.assertEqual(slider.value(),20);wheel(60);self.assertEqual(slider.value(),21)
+  slider.setValue(100);wheel(120);self.assertEqual(slider.value(),100)
+  slider.close()
  def setUp(self):
   from unittest.mock import patch
   from PySide6.QtCore import QSettings

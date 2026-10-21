@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt, QSize, QRect, QRectF, QPointF, Signal, QObject, Q
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKeySequence, QFontDatabase, QFont, QShortcut, QDrag, QIcon
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem,
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
-    QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu, QDockWidget, QToolButton, QButtonGroup, QStyle)
+    QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu, QDockWidget, QToolButton, QButtonGroup, QStyle, QStyleOptionSlider)
 from exporting import prepare_output
 from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, render_clones, ClonePreview, export_image, export_pair
 
@@ -29,6 +29,45 @@ def tool_icon(index):
         painter.setBrush(QColor('#205a91'));painter.drawEllipse(11,3,10,10);painter.drawRect(13,11,6,8)
         painter.drawRoundedRect(QRectF(6,18,20,7),2,2);painter.drawRect(4,27,24,3)
     painter.end();return QIcon(pixmap)
+
+class StrengthSlider(QSlider):
+    def __init__(self,parent=None):
+        super().__init__(Qt.Orientation.Horizontal,parent)
+        self.wheel_remainder=0
+        self.track_drag=False
+        self.setSingleStep(1);self.setPageStep(1)
+    def mousePressEvent(self,event):
+        if event.button()==Qt.MouseButton.LeftButton:
+            option=QStyleOptionSlider();self.initStyleOption(option)
+            handle=self.style().subControlRect(QStyle.ComplexControl.CC_Slider,option,QStyle.SubControl.SC_SliderHandle,self)
+            if not handle.contains(event.position().toPoint()):
+                self.track_drag=True
+                groove=self.style().subControlRect(QStyle.ComplexControl.CC_Slider,option,QStyle.SubControl.SC_SliderGroove,self)
+                start=groove.x();span=max(1,groove.width()-handle.width())
+                position=round(event.position().x()-start-handle.width()/2)
+                self.setSliderDown(True)
+                self.setValue(QStyle.sliderValueFromPosition(self.minimum(),self.maximum(),position,span,option.upsideDown))
+                event.accept();return
+        super().mousePressEvent(event)
+    def mouseMoveEvent(self,event):
+        if self.track_drag:
+            option=QStyleOptionSlider();self.initStyleOption(option)
+            handle=self.style().subControlRect(QStyle.ComplexControl.CC_Slider,option,QStyle.SubControl.SC_SliderHandle,self)
+            groove=self.style().subControlRect(QStyle.ComplexControl.CC_Slider,option,QStyle.SubControl.SC_SliderGroove,self)
+            position=round(event.position().x()-groove.x()-handle.width()/2)
+            self.setValue(QStyle.sliderValueFromPosition(self.minimum(),self.maximum(),position,max(1,groove.width()-handle.width()),option.upsideDown))
+            event.accept();return
+        super().mouseMoveEvent(event)
+    def mouseReleaseEvent(self,event):
+        if self.track_drag and event.button()==Qt.MouseButton.LeftButton:
+            self.track_drag=False;self.setSliderDown(False);event.accept();return
+        super().mouseReleaseEvent(event)
+    def wheelEvent(self,event):
+        self.wheel_remainder+=event.angleDelta().y()
+        steps=int(self.wheel_remainder/120)
+        self.wheel_remainder-=steps*120
+        if steps:self.setValue(self.value()+steps)
+        event.accept()
 
 class ToolPicker(QWidget):
     currentIndexChanged=Signal(int)
@@ -383,7 +422,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.37'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.38'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -489,7 +528,7 @@ class Window(QMainWindow):
         softness_tools.addWidget(QLabel('도장: Alt+클릭으로 기준점 · 드래그로 덮기'))
         tools=QHBoxLayout(); bottom_layout.addLayout(tools)
         tools.addWidget(QLabel('모자이크 강도'))
-        self.strength=QSlider(Qt.Orientation.Horizontal); self.strength.setTracking(True); self.strength.setRange(2,100); self.strength.setValue(20); tools.addWidget(self.strength)
+        self.strength=StrengthSlider(); self.strength.setTracking(True); self.strength.setRange(2,100); self.strength.setValue(20); tools.addWidget(self.strength)
         self.value=QLabel('20'); tools.addWidget(self.value)
         delete_region=QPushButton('선택 영역 삭제'); tools.addWidget(delete_region); delete_region.clicked.connect(self.remove_region)
         self.original=QPushButton('원본 비교'); self.original.setCheckable(True); tools.addWidget(self.original); self.original.toggled.connect(self.render)
@@ -1136,3 +1175,4 @@ if __name__=='__main__':
         window.dirty=False
         QTimer.singleShot(1000,app.quit)
     sys.exit(app.exec())
+
