@@ -62,6 +62,8 @@ class Job(QRunnable):
         except Exception as exc: result = (False, str(exc))
         self.signals.done.emit(result)
 
+HISTORY_LIMIT = 1000
+
 MOSAIC_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 MAIN_ROLE = int(Qt.ItemDataRole.UserRole) + 2
 
@@ -381,7 +383,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.36'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.37'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -391,7 +393,7 @@ class Window(QMainWindow):
         except (ValueError,TypeError):self.recent_projects=[]
         if not isinstance(self.recent_projects,list):self.recent_projects=[]
         self.recent_projects=[path for path in self.recent_projects if isinstance(path,str)]
-        self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.history_labels=[]; self.redo_stack=[]; self.dirty=False; self.project=None
+        self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.history_labels=[]; self.redo_stack=[]; self.snapshot_cache={}; self.strength_drag_recorded=False; self.dirty=False; self.project=None
         self.clone_cache_key=None;self.clone_cache_image=None;self.clone_live=None;self.clone_live_entry=None
         self.clone_timer=QTimer(self);self.clone_timer.setSingleShot(True);self.clone_timer.timeout.connect(self.flush_clone_preview)
         self.thumb_cache=OrderedDict();self.thumb_waiters={};self.thumb_cache_bytes=0
@@ -494,6 +496,11 @@ class Window(QMainWindow):
         batch_tools=QHBoxLayout(); bottom_layout.addLayout(batch_tools)
         self.batch_strength_button=QPushButton('선택 사진 강도 일괄 변경')
         self.batch_strength_button.clicked.connect(self.batch_strength_dialog); batch_tools.addWidget(self.batch_strength_button)
+        reset_button=QPushButton('모자이크 초기화');reset_menu=QMenu(reset_button)
+        reset_menu.addAction('현재 그림의 모자이크 모두 제거',lambda:self.clear_mosaics([self.current()['id']] if self.current() else []))
+        reset_menu.addAction('선택한 그림들의 모자이크 모두 제거',lambda:self.clear_mosaics([item.data(Qt.ItemDataRole.UserRole) for item in self.list.selectedItems()]))
+        reset_menu.addAction('모든 그림의 모자이크 모두 제거',lambda:self.clear_mosaics(list(self.entries)))
+        reset_button.setMenu(reset_menu);batch_tools.addWidget(reset_button)
         batch_tools.addWidget(QLabel('Ctrl/Shift로 여러 장 선택 · Ctrl+A로 전체 선택')); batch_tools.addStretch()
         bottom_layout.addWidget(QLabel('박스: 드래그 / 영역 클릭 · 브러시: 문지르기 · Ctrl+Z: 취소 · ← / →: 이전 / 다음 그림'))
         bottom_layout.addStretch()
@@ -522,7 +529,7 @@ class Window(QMainWindow):
         self.clone_softness.valueChanged.connect(lambda value:self.settings.setValue('tools/softness',value))
         self.strength.sliderPressed.connect(self.begin_strength_change)
         self.strength.sliderMoved.connect(self.strength.setValue)
-        self.strength.actionTriggered.connect(self.strength_action)
+        self.strength.sliderReleased.connect(self.begin_strength_change)
         for key,fn in [('Delete',self.remove_selected),('Ctrl+S',self.save_project),('Ctrl+Shift+S',self.save_project_as),('Ctrl+O',self.load_project),('Right',lambda:self.navigate(1)),('Left',lambda:self.navigate(-1))]:
             action=QAction(self); action.setShortcut(QKeySequence(key)); action.triggered.connect(fn); self.addAction(action)
         self.undo_shortcut=QShortcut(QKeySequence.StandardKey.Undo,self)
@@ -593,13 +600,25 @@ class Window(QMainWindow):
         self.status.setText(f'저장한 작업 {len(paths)}개를 목록에 추가했습니다.')
     def capture_state(self):
         entry=self.current()
-        return (copy.deepcopy(self.ordered()),entry['id'] if entry else None,self.canvas.active)
+        state=[]
+        for image in self.ordered():
+            cached=self.snapshot_cache.get(image['id'])
+            if cached is None or cached!=image:
+                previous=cached or {}
+                frozen={key:copy.deepcopy(value) for key,value in image.items() if key not in ('regions','clones')}
+                for field in ('regions','clones'):
+                    if field not in image:continue
+                    old=previous.get(field,[])
+                    frozen[field]=[old[index] if index<len(old) and old[index]==value else copy.deepcopy(value) for index,value in enumerate(image[field])]
+                cached=frozen;self.snapshot_cache[image['id']]=cached
+            state.append(cached)
+        return (state,entry['id'] if entry else None,self.canvas.active)
     def update_history_controls(self):
         self.undo_button.setEnabled(bool(self.history));self.redo_button.setEnabled(bool(self.redo_stack))
         self.undo_button.setToolTip('Ctrl+Z');self.redo_button.setToolTip('Ctrl+Y 또는 Ctrl+Shift+Z')
     def snapshot(self,label='작업 변경'):
         self.history.append(self.capture_state())
-        self.history=self.history[-30:];self.history_labels.append(label);self.history_labels=self.history_labels[-30:]
+        self.history=self.history[-HISTORY_LIMIT:];self.history_labels.append(label);self.history_labels=self.history_labels[-HISTORY_LIMIT:]
         self.redo_stack.clear();self.update_history_controls();self.dirty=True
     def undo(self):
         if not self.history:return
@@ -610,14 +629,15 @@ class Window(QMainWindow):
     def redo(self):
         if not self.redo_stack:return
         state,label=self.redo_stack.pop()
-        self.history.append(self.capture_state());self.history=self.history[-30:]
-        self.history_labels.append(label);self.history_labels=self.history_labels[-30:]
+        self.history.append(self.capture_state());self.history=self.history[-HISTORY_LIMIT:]
+        self.history_labels.append(label);self.history_labels=self.history_labels[-HISTORY_LIMIT:]
         self.restore_state(state);self.update_history_controls()
         self.status.setText('다시 실행: '+label)
     def restore_state(self,snapshot):
         self.clone_timer.stop();self.clone_live=None;self.clone_live_entry=None
         self.clone_cache_key=None;self.clone_cache_image=None
-        state,current_id,active=snapshot
+        saved,current_id,active=snapshot
+        state=copy.deepcopy(saved)
         # Editing a region does not require reloading every thumbnail.
         if [e['id'] for e in state]==[e['id'] for e in self.ordered()]:
             self.entries={e['id']:e for e in state}
@@ -900,13 +920,24 @@ class Window(QMainWindow):
         region['rect']=[max(0,min(p[0] for p in points)-radius),max(0,min(p[1] for p in points)-radius*aspect),
                         min(1,max(p[0] for p in points)+radius),min(1,max(p[1] for p in points)+radius*aspect)]
     def begin_strength_change(self):
-        entry=self.current()
-        if entry and 0<=self.canvas.active<len(entry['regions']):self.snapshot('모자이크 강도 변경')
-    def strength_action(self,*args):
-        if not self.strength.isSliderDown(): self.begin_strength_change()
+        self.strength_drag_recorded=False
     def strength_changed(self,value):
-        self.value.setText(str(value)); entry=self.current(); i=self.canvas.active
-        if entry and 0<=i<len(entry['regions']):entry['regions'][i]['strength']=value; self.dirty=True; self.render()
+        self.value.setText(str(value));entry=self.current();index=self.canvas.active
+        if not entry or not 0<=index<len(entry['regions']):return
+        if entry['regions'][index]['strength']==value:return
+        if not self.strength.isSliderDown() or not self.strength_drag_recorded:
+            self.snapshot('모자이크 강도 변경')
+            self.strength_drag_recorded=self.strength.isSliderDown()
+        entry['regions'][index]['strength']=value;self.dirty=True;self.render()
+    def clear_mosaics(self,ids):
+        targets=[self.entries[eid] for eid in set(ids) if eid in self.entries and self.entries[eid]['regions']]
+        if not targets:
+            self.status.setText('지울 모자이크가 없습니다.');return
+        self.snapshot(f'모자이크 초기화 · {len(targets)}장')
+        for entry in targets:entry['regions']=[]
+        self.canvas.active=-1;self.canvas.start=None;self.canvas.end=None;self.canvas.drawing_brush=False
+        self.original.setChecked(False);self.render();self.renumber()
+        self.status.setText(f'{len(targets)}장의 모자이크를 모두 지웠습니다. 도장 보정은 유지됩니다. Ctrl+Z로 복원')
     def batch_strength_dialog(self):
         ids=[item.data(Qt.ItemDataRole.UserRole) for item in self.list.selectedItems()]
         entries=[self.entries[eid] for eid in ids if self.entries[eid]['regions']]
@@ -984,7 +1015,7 @@ class Window(QMainWindow):
                     if r.get('kind')=='brush':
                         if not isinstance(r.get('points'),list) or not r['points'] or not 0<r.get('radius',0)<=.1:raise ValueError('잘못된 브러시 영역')
                         if not all(len(point)==2 and all(isinstance(v,(int,float)) and 0<=v<=1 for v in point) for point in r['points']):raise ValueError('잘못된 브러시 좌표')
-            self.populate(entries); self.history=[]; self.history_labels=[]; self.redo_stack=[];self.update_history_controls(); self.project=str(Path(path).resolve()); self.dirty=False
+            self.populate(entries); self.history=[]; self.history_labels=[]; self.redo_stack=[];self.snapshot_cache={};self.update_history_controls(); self.project=str(Path(path).resolve()); self.dirty=False
             self.remember_project(self.project);return True
         except Exception as exc:
             QMessageBox.warning(self,'열기 실패',str(exc));return False

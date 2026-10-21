@@ -934,4 +934,59 @@ class Tests(unittest.TestCase):
    w.redo();self.assertEqual([e['path'] for e in w.ordered()],paths)
    while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
    w.dirty=False;w.close()
+ def test_tool_settings_and_noop_slider_do_not_use_undo_slots(self):
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'settings.png';Image.new('RGB',(80,60),'red').save(path)
+   w=Window();w.add_paths([str(path)]);deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.region_event(('add',[.1,.1,.8,.8]));before=len(w.history)
+   for i in range(100):
+    w.tool.setCurrentIndex(i%3);w.brush_size.setValue(5+i%190);w.clone_softness.setValue(i%101)
+    w.strength.setSliderDown(True);w.strength.setSliderDown(False)
+   self.assertEqual(len(w.history),before)
+   size=w.brush_size.value();tool=w.tool.currentIndex();w.undo()
+   self.assertFalse(w.current()['regions']);self.assertEqual(w.brush_size.value(),size);self.assertEqual(w.tool.currentIndex(),tool)
+   w.dirty=False;w.close()
+ def test_history_capacity_and_shared_unchanged_entries(self):
+  from main import HISTORY_LIMIT
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths=[]
+   for i in range(2):
+    path=Path(d)/f'{i}.png';Image.new('RGB',(80,60),'red').save(path);paths.append(str(path))
+   w=Window();w.add_paths(paths)
+   for i in range(HISTORY_LIMIT+10):
+    w.snapshot('편집');w.current()['main_selected']=not w.current()['main_selected']
+   self.assertEqual(len(w.history),1000)
+   self.assertIs(w.history[-1][0][1],w.history[-2][0][1])
+   w.current()['clones']=[{'source':[.1,.1],'points':[[.2,.2]],'radius':.02,'softness':.5}]
+   w.snapshot();w.current()['main_selected']=not w.current()['main_selected'];w.snapshot()
+   self.assertIs(w.history[-1][0][0]['clones'][0],w.history[-2][0][0]['clones'][0])
+   for _ in range(60):w.undo()
+   self.assertEqual(len(w.redo_stack),60)
+   for _ in range(60):w.redo()
+   self.assertEqual(len(w.history),1000)
+   deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close()
+ def test_clear_all_mosaics_preserves_clone_and_can_undo(self):
+  import copy
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths=[]
+   for i in range(2):
+    path=Path(d)/f'{i}.png';Image.new('RGB',(80,60),'red').save(path);paths.append(str(path))
+   w=Window();w.add_paths(paths);deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   for entry in w.ordered():
+    entry['regions']=[{'rect':[.1,.1,.8,.8],'strength':20}]
+    entry['clones']=[{'source':[.1,.1],'points':[[.7,.7]],'radius':.02,'softness':.5}]
+   before=copy.deepcopy(w.ordered());w.clear_mosaics([w.ordered()[0]['id']])
+   self.assertFalse(w.ordered()[0]['regions']);self.assertTrue(w.ordered()[1]['regions']);self.assertTrue(w.ordered()[0]['clones'])
+   w.undo();self.assertEqual(w.ordered(),before)
+   w.clear_mosaics(list(w.entries));self.assertFalse(any(e['regions'] for e in w.ordered()))
+   self.assertTrue(all(e['clones'] for e in w.ordered()));w.undo();self.assertEqual(w.ordered(),before)
+   w.redo();self.assertFalse(any(e['regions'] for e in w.ordered()))
+   w.dirty=False;w.close()
 if __name__=='__main__':unittest.main()
