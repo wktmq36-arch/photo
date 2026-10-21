@@ -12,28 +12,58 @@ def read_pixels(path):
         # Construct from pixel bytes: no EXIF, XMP, ICC, comments or source info.
         return Image.frombytes('RGBA', rgba.size, rgba.tobytes())
 
+def grid_mosaic(image, box, block):
+    """Sample original pixels on a grid anchored to the image, not the stroke."""
+    left,top=(box[0]//block)*block,(box[1]//block)*block
+    right,bottom=math.ceil(box[2]/block)*block,math.ceil(box[3]/block)*block
+    crop=image.crop((left,top,min(right,image.width),min(bottom,image.height)))
+    # Extend edge pixels for partial cells; never average in black crop padding.
+    padded=Image.new(image.mode,(right-left,bottom-top));padded.paste(crop,(0,0))
+    if crop.width<padded.width:
+        padded.paste(crop.crop((crop.width-1,0,crop.width,crop.height)).resize((padded.width-crop.width,crop.height)),(crop.width,0))
+    if crop.height<padded.height:
+        padded.paste(padded.crop((0,crop.height-1,padded.width,crop.height)).resize((padded.width,padded.height-crop.height)),(0,crop.height))
+    small=padded.resize((padded.width//block,padded.height//block),Image.Resampling.BOX)
+    mosaic=small.resize(padded.size,Image.Resampling.NEAREST)
+    return mosaic.crop((box[0]-left,box[1]-top,box[2]-left,box[3]-top))
+
 def render_regions(image, regions):
-    result = image.copy()
-    width, height = result.size
+    result=image.copy();width,height=image.size;groups={}
     for region in regions:
-        x1, y1, x2, y2 = region['rect']
-        box = (max(0, math.floor(x1 * width)), max(0, math.floor(y1 * height)),
-               min(width, math.ceil(x2 * width)), min(height, math.ceil(y2 * height)))
-        if box[2] <= box[0] or box[3] <= box[1]:
-            continue
-        crop = result.crop(box)
-        block = max(2, round(region['strength'] * width / 1000))
-        small = crop.resize((max(1, crop.width // block), max(1, crop.height // block)), Image.Resampling.BOX)
-        mosaic = small.resize(crop.size, Image.Resampling.NEAREST)
-        mask = None
-        if region.get('kind') == 'brush':
-            mask = Image.new('L', crop.size, 0)
-            draw = ImageDraw.Draw(mask)
-            radius = region['radius'] * width
-            points = [(x*width-box[0], y*height-box[1]) for x,y in region['points']]
-            if len(points)>1: draw.line(points, fill=255, width=max(1,round(radius*2)))
-            for x,y in points: draw.ellipse((x-radius,y-radius,x+radius,y+radius),fill=255)
-        result.paste(mosaic, box, mask)
+        brush=region.get('kind')=='brush'
+        if brush:
+            points=region['points']
+            if not points:continue
+            radius=region['radius']*width
+            xs=[p[0]*width for p in points];ys=[p[1]*height for p in points]
+            # A narrow outward feather leaves the entire existing mask opaque.
+            box=(max(0,math.floor(min(xs)-radius)-3),max(0,math.floor(min(ys)-radius)-3),
+                 min(width,math.ceil(max(xs)+radius)+4),min(height,math.ceil(max(ys)+radius)+4))
+        else:
+            x1,y1,x2,y2=region['rect']
+            box=(max(0,math.floor(x1*width)),max(0,math.floor(y1*height)),min(width,math.ceil(x2*width)),min(height,math.ceil(y2*height)))
+        if box[2]<=box[0] or box[3]<=box[1]:continue
+        block=max(2,round(region['strength']*width/1000))
+        groups.setdefault(block,[]).append((region,box))
+    # Combine masks BEFORE compositing. Repeated strokes are idempotent and the
+    # strongest block wins overlaps regardless of the order the strokes were made.
+    for block,items in sorted(groups.items()):
+        box=(min(b[0] for r,b in items),min(b[1] for r,b in items),max(b[2] for r,b in items),max(b[3] for r,b in items))
+        mask=Image.new('L',(box[2]-box[0],box[3]-box[1]),0)
+        for region,bounds in items:
+            if region.get('kind')=='brush':
+                local=Image.new('L',(bounds[2]-bounds[0],bounds[3]-bounds[1]),0);draw=ImageDraw.Draw(local)
+                radius=region['radius']*width
+                points=[(x*width-bounds[0],y*height-bounds[1]) for x,y in region['points']]
+                if len(points)>1:draw.line(points,fill=255,width=max(1,round(radius*2)))
+                for x,y in points:draw.ellipse((x-radius,y-radius,x+radius,y+radius),fill=255)
+            else:local=Image.new('L',(bounds[2]-bounds[0],bounds[3]-bounds[1]),255)
+            offset=(bounds[0]-box[0],bounds[1]-box[1]);area=(*offset,offset[0]+local.width,offset[1]+local.height)
+            mask.paste(ImageChops.lighter(mask.crop(area),local),offset)
+        # Feather the union, so internal stroke seams cannot become visible.
+        if any(r.get('kind')=='brush' for r,b in items):
+            mask=ImageChops.lighter(mask,mask.filter(ImageFilter.GaussianBlur(.65)))
+        result.paste(grid_mosaic(image,box,block),box,mask)
     return result
 
 def clone_bounds(points,radius,sigma,size):

@@ -6,6 +6,39 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_mosaic_repeated_strokes_and_order_do_not_change_strength(self):
+  from imaging import render_regions
+  image=Image.effect_noise((503,397),100).convert('RGBA')
+  original=image.tobytes()
+  a={'kind':'brush','rect':[.1,.1,.7,.7],'points':[[.3,.3],[.6,.5]],'radius':.08,'strength':24}
+  b=dict(a,points=[[.4,.4],[.7,.6]],strength=8)
+  first=render_regions(image,[a,b])
+  self.assertEqual(first.tobytes(),render_regions(image,[a,b,a,b]*10).tobytes())
+  self.assertEqual(first.tobytes(),render_regions(image,[b,a]).tobytes())
+  self.assertEqual(first.getpixel((251,190)),render_regions(image,[a]).getpixel((251,190)))
+  self.assertEqual(image.tobytes(),original)
+ def test_mosaic_grid_stays_fixed_across_stroke_extent_and_image_edges(self):
+  from imaging import render_regions,grid_mosaic
+  image=Image.effect_noise((503,397),100).convert('RGBA')
+  short={'kind':'brush','rect':[.25,.25,.35,.35],'points':[[.3,.3]],'radius':.05,'strength':24}
+  long=dict(short,points=[[.3,.3],[.8,.7]])
+  self.assertEqual(render_regions(image,[short]).crop((140,110,160,130)).tobytes(),render_regions(image,[long]).crop((140,110,160,130)).tobytes())
+  full=grid_mosaic(image,(0,0,503,397),12)
+  for box in [(17,23,80,99),(480,370,503,397),(0,0,2,2)]:
+   self.assertEqual(full.crop(box).tobytes(),grid_mosaic(image,box,12).tobytes())
+  white=Image.new('RGBA',(503,397),'white')
+  self.assertEqual(grid_mosaic(white,(480,370,503,397),12).getextrema(),white.getextrema())
+ def test_mosaic_feather_preserves_opaque_core_and_legacy_region_data(self):
+  import copy
+  from PIL import ImageDraw
+  from imaging import render_regions,grid_mosaic
+  image=Image.effect_noise((400,400),100).convert('RGBA')
+  old={'kind':'brush','rect':[.45,.45,.55,.55],'points':[[.5,.5]],'radius':.05,'strength':20}
+  before=copy.deepcopy(old);result=render_regions(image,[old]);self.assertEqual(old,before)
+  mask=Image.new('L',image.size);ImageDraw.Draw(mask).ellipse((180,180,220,220),fill=255)
+  expected=grid_mosaic(image,(0,0,400,400),8)
+  self.assertEqual(Image.composite(result,image,mask).tobytes(),Image.composite(expected,image,mask).tobytes())
+  self.assertEqual(result.getpixel((20,20)),image.getpixel((20,20)))
  def test_undo_redo_preserves_all_current_tool_settings(self):
   app=QApplication.instance() or QApplication([])
   with tempfile.TemporaryDirectory() as d:
