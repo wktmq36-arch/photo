@@ -904,4 +904,34 @@ class Tests(unittest.TestCase):
    self.assertFalse(stale.exists());self.assertTrue((root/'a_main/001.png').exists())
    for relative,data in before.items():self.assertEqual((root/relative).read_bytes(),data)
    w.dirty=False;w.close()
+ def test_external_files_drop_inserts_at_indicator_and_undoes_once(self):
+  import json
+  from PySide6.QtCore import Qt,QPointF,QMimeData,QUrl
+  from PySide6.QtGui import QDragEnterEvent,QDragMoveEvent,QDragLeaveEvent,QDropEvent
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths=[]
+   for i in range(4):
+    p=Path(d)/f'{i}.png';Image.new('RGB',(80,60),(i*40,0,0)).save(p);paths.append(str(p))
+   w=Window();w.show();w.add_paths([paths[0],paths[3]]);deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   old=w.list.item(1);rect=w.list.cell_rect(1);pos=rect.topLeft();pos.setX(pos.x()+3);pos.setY(pos.y()+40)
+   mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(path) for path in [paths[1],paths[2],paths[0]]])
+   enter=QDragEnterEvent(pos,Qt.DropAction.CopyAction|Qt.DropAction.MoveAction,mime,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)
+   w.list.dragEnterEvent(enter);self.assertTrue(enter.isAccepted());self.assertEqual(w.list.drop_target,1)
+   move=QDragMoveEvent(pos,Qt.DropAction.CopyAction|Qt.DropAction.MoveAction,mime,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)
+   w.list.dragMoveEvent(move);self.assertEqual(w.list.drop_target,1)
+   w.list.dragLeaveEvent(QDragLeaveEvent());self.assertIsNone(w.list.drop_target)
+   drop=QDropEvent(QPointF(pos),Qt.DropAction.CopyAction|Qt.DropAction.MoveAction,mime,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)
+   history=len(w.history);w.list.dropEvent(drop)
+   self.assertTrue(drop.isAccepted());self.assertEqual(drop.dropAction(),Qt.DropAction.CopyAction)
+   self.assertEqual([e['path'] for e in w.ordered()],paths);self.assertIs(w.list.item(3),old)
+   self.assertEqual(len(w.history),history+1);self.assertEqual(w.selection_count.text(),'선택 2장')
+   self.assertIsNone(w.list.drop_target);self.assertTrue(all(Path(path).exists() for path in paths))
+   saved=str(Path(d)/'inserted.photo.json');w.write_project(saved)
+   self.assertEqual([e['path'] for e in json.loads(Path(saved).read_text(encoding='utf-8'))['images']],paths)
+   w.undo();self.assertEqual([e['path'] for e in w.ordered()],[paths[0],paths[3]])
+   w.redo();self.assertEqual([e['path'] for e in w.ordered()],paths)
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close()
 if __name__=='__main__':unittest.main()

@@ -83,7 +83,7 @@ class ThumbnailDelegate(QStyledItemDelegate):
         painter.restore()
 
 class ImageList(QListWidget):
-    dropped = Signal(list)
+    dropped = Signal(list,int)
     reordered = Signal()
     reordering = Signal()
     def __init__(self):
@@ -239,11 +239,22 @@ class ImageList(QListWidget):
         # Own the entire move: Qt's built-in source cleanup must not remove rows again.
         drag.exec(Qt.DropAction.MoveAction)
     def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls() or event.mimeData().hasFormat(self.MIME):event.acceptProposedAction()
+        if event.mimeData().hasUrls():
+            self.drop_target=self.target_at(event.position().toPoint());self.viewport().update()
+            event.setDropAction(Qt.DropAction.CopyAction);event.accept()
+        elif event.mimeData().hasFormat(self.MIME):event.acceptProposedAction()
         else:event.ignore()
     def dragMoveEvent(self, event):
-        if event.mimeData().hasUrls() or event.mimeData().hasFormat(self.MIME):event.acceptProposedAction()
+        if event.mimeData().hasUrls() or event.mimeData().hasFormat(self.MIME):
+            pos=event.position().toPoint();bar=self.verticalScrollBar()
+            if pos.y()<30:bar.setValue(bar.value()-24)
+            elif pos.y()>self.viewport().height()-30:bar.setValue(bar.value()+24)
+            self.drop_target=self.target_at(pos);self.viewport().update()
+            if event.mimeData().hasUrls():event.setDropAction(Qt.DropAction.CopyAction);event.accept()
+            else:event.acceptProposedAction()
         else:event.ignore()
+    def dragLeaveEvent(self,event):
+        self.drop_target=None;self.viewport().update();event.accept()
     def move_ids(self, ids, target):
         rows=[row for row in range(self.count()) if self.item(row).data(Qt.ItemDataRole.UserRole) in ids]
         if not rows:return
@@ -261,16 +272,18 @@ class ImageList(QListWidget):
         self.blockSignals(False); self.doItemsLayout()
         self.currentItemChanged.emit(items[0],None); self.reordered.emit()
     def dropEvent(self, event):
-        if event.mimeData().hasUrls():
-            self.dropped.emit([url.toLocalFile() for url in event.mimeData().urls()]); event.acceptProposedAction()
-        elif event.mimeData().hasFormat(self.MIME):
-            try:ids=json.loads(bytes(event.mimeData().data(self.MIME)).decode('utf-8'))
-            except (ValueError,UnicodeDecodeError):event.ignore(); return
-            pos=event.position().toPoint(); index=self.indexAt(pos); target=index.row()
-            if target<0:target=self.count()
-            elif pos.x()>=self.visualRect(index).center().x():target+=1
-            self.move_ids(ids,target); event.setDropAction(Qt.DropAction.MoveAction); event.accept()
-        else:event.ignore()
+        try:
+            target=self.target_at(event.position().toPoint())
+            if event.mimeData().hasUrls():
+                files=[url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
+                self.dropped.emit(files,target);event.setDropAction(Qt.DropAction.CopyAction);event.accept()
+            elif event.mimeData().hasFormat(self.MIME):
+                try:ids=json.loads(bytes(event.mimeData().data(self.MIME)).decode('utf-8'))
+                except (ValueError,UnicodeDecodeError):event.ignore();return
+                self.move_ids(ids,target);event.setDropAction(Qt.DropAction.MoveAction);event.accept()
+            else:event.ignore()
+        finally:
+            self.drop_target=None;self.viewport().update()
 
 class Canvas(QWidget):
     selected = Signal(object)
@@ -368,7 +381,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.34'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.35'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.ico')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -680,7 +693,7 @@ class Window(QMainWindow):
         files,_=QFileDialog.getOpenFileNames(self,'그림 추가','','Images (*.webp *.png *.jpg *.jpeg *.bmp *.tif *.tiff)'); self.add_paths(files)
     def folder_dialog(self):
         path=QFileDialog.getExistingDirectory(self,'그림 폴더'); self.add_paths([path] if path else [])
-    def add_paths(self,paths):
+    def add_paths(self,paths,insertion_row=None):
         expanded=[]
         for path in paths:
             p=Path(path)
@@ -690,9 +703,23 @@ class Window(QMainWindow):
         paths=list(dict.fromkeys(p for p in paths if p not in known))
         if not paths:return
         self.snapshot(f'그림 추가 · {len(paths)}장')
-        for path in paths:self.insert_entry({'id':uuid.uuid4().hex,'path':path,'regions':[]})
-        self.renumber()
-        if self.list.currentRow()<0:self.list.setCurrentRow(0)
+        if insertion_row is None:
+            for path in paths:self.insert_entry({'id':uuid.uuid4().hex,'path':path,'regions':[]})
+            self.renumber()
+            if self.list.currentRow()<0:self.list.setCurrentRow(0)
+            return
+        row=max(0,min(self.list.count(),insertion_row))
+        self.list.blockSignals(True);self.list.setUpdatesEnabled(False)
+        try:
+            for offset,path in enumerate(paths):self.insert_entry({'id':uuid.uuid4().hex,'path':path,'regions':[]},row+offset)
+            self.list.clearSelection()
+            self.list.setCurrentRow(row,QItemSelectionModel.SelectionFlag.NoUpdate)
+            for offset in range(len(paths)):self.list.item(row+offset).setSelected(True)
+            self.list.selection_anchor=self.list.item(row).data(Qt.ItemDataRole.UserRole)
+        finally:
+            self.list.blockSignals(False);self.list.setUpdatesEnabled(True)
+        self.list.scrollToItem(self.list.item(row));self.list.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.renumber();self.selection_changed()
     def renumber(self):
         self.update_selection_count()
         for i in range(self.list.count()):
