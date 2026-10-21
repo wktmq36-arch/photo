@@ -381,8 +381,8 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.35'); self.resize(1400,900)
-        self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.ico')))
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.36'); self.resize(1400,900)
+        self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
         self.tool_sizes={name:max(5,min(200,self.settings.value('tools/sizes/'+name,legacy_size,type=int))) for name in ['box','brush','clone']}
@@ -1057,7 +1057,12 @@ class Window(QMainWindow):
         self.pool.waitForDone(); self.preview_pool.waitForDone(); event.accept()
 
 if __name__=='__main__':
+    if sys.platform=='win32':
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('wktmq36.PhotoOrganizer.Desktop')
     app=QApplication(sys.argv); app.setStyle('Fusion')
+    app.setApplicationName('Photo');app.setOrganizationName('PhotoOrganizer')
+    app.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
     font_path=Path('C:/Windows/Fonts/malgun.ttf')
     if font_path.exists():
         font_id=QFontDatabase.addApplicationFont(str(font_path))
@@ -1066,6 +1071,12 @@ if __name__=='__main__':
     app.setStyleSheet('QWidget {font-family: "Malgun Gothic"; font-size: 12px;} QPushButton {padding: 8px 12px;} QListWidget {background:#202630;color:#eef2f8;} QListWidget::item:selected {background:#355e89;}')
     window=Window(); window.show()
     if '--smoke-test' in sys.argv:
+        assert not app.windowIcon().isNull() and not window.windowIcon().isNull()
+        if sys.platform=='win32':
+            app_id=ctypes.c_wchar_p()
+            assert ctypes.windll.shell32.GetCurrentProcessExplicitAppUserModelID(ctypes.byref(app_id))==0
+            assert app_id.value=='wktmq36.PhotoOrganizer.Desktop'
+            ctypes.windll.ole32.CoTaskMemFree(app_id)
         from PIL import Image
         sample=to_qimage(Image.new('RGBA',(32,32),(12,34,56,255)))
         assert sample.pixelColor(0,0).red()==12
