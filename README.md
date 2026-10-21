@@ -28,7 +28,7 @@ python -m venv .venv
 pip install -r requirements.txt
 python main.py
 python -m unittest -v test_photo
-python -m PyInstaller --noconfirm --windowed --onedir --name Photo main.py
+python -m PyInstaller --noconfirm --windowed --onedir --name Photo --icon assets/photo.ico --add-data "assets;assets" main.py
 ```
 GitHub Actions에서 수동 실행하거나 v로 시작하는 태그를 push하면 Windows 빌드 artifact를 만듭니다. 이미지 및 작업 JSON, 빌드 출력은 소스 저장소에 올리지 않습니다.
 

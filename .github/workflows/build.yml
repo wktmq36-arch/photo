@@ -13,7 +13,7 @@ jobs:
           python-version: '3.10'
       - run: pip install -r requirements.txt
       - run: python -m unittest -v test_photo
-      - run: python -m PyInstaller --noconfirm --windowed --onedir --name Photo main.py
+      - run: python -m PyInstaller --noconfirm --windowed --onedir --name Photo --icon assets/photo.ico --add-data "assets;assets" main.py
       - name: Test packaged EXE
         shell: pwsh
         run: |

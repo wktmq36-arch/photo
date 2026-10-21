@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+<defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#257ddd"/><stop offset="1" stop-color="#163f8c"/></linearGradient></defs>
+<rect x="8" y="8" width="240" height="240" rx="48" fill="url(#bg)"/>
+<rect x="43" y="40" width="155" height="146" rx="16" fill="#8db9eb" transform="rotate(-10 120 110)"/>
+<rect x="48" y="54" width="166" height="152" rx="16" fill="#d4e7fb" transform="rotate(5 130 130)"/>
+<rect x="39" y="64" width="174" height="151" rx="14" fill="#fff"/>
+<rect x="51" y="76" width="150" height="114" rx="6" fill="#c8e9f8"/>
+<circle cx="164" cy="100" r="14" fill="#ffca61"/>
+<path d="M51 174l46-60 34 41 24-26 46 48v13H51z" fill="#3d9685"/>
+<path d="M51 182l40-34 33 24 26-18 51 33v3H51z" fill="#246f6c"/>
+<rect x="144" y="145" width="75" height="75" rx="8" fill="#fff"/>
+<path d="M151 152h19v19h-19zm42 0h19v19h-19zm-21 21h19v19h-19zm-21 21h19v19h-19zm42 0h19v19h-19z" fill="#2458ab"/>
+<path d="M172 152h19v19h-19zm-21 21h19v19h-19zm42 0h19v19h-19zm-21 21h19v19h-19z" fill="#7bace9"/>
+</svg>

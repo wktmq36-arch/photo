@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt, QSize, QRect, QRectF, QPointF, Signal, QObject, Q
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKeySequence, QFontDatabase, QFont, QShortcut, QDrag, QIcon
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem,
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
-    QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu, QDockWidget, QToolButton, QButtonGroup)
+    QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu, QDockWidget, QToolButton, QButtonGroup, QStyle)
 from exporting import prepare_output
 from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, render_clones, ClonePreview, export_image, export_pair
 
@@ -368,7 +368,8 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.33'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.34'); self.resize(1400,900)
+        self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.ico')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
         self.tool_sizes={name:max(5,min(200,self.settings.value('tools/sizes/'+name,legacy_size,type=int))) for name in ['box','brush','clone']}
@@ -389,6 +390,10 @@ class Window(QMainWindow):
         top=QHBoxLayout(); layout.addLayout(top)
         for label,fn in [('파일 추가',self.add_dialog),('폴더 추가',self.folder_dialog),('작업 열기',self.load_project),('작업 저장',self.save_project),('다른 이름으로 저장',self.save_project_as),('실행 취소',self.undo),('다시 실행',self.redo),('목록에서 제외',self.remove_selected)]:
             button=QPushButton(label); button.clicked.connect(fn); top.addWidget(button)
+            icons={'파일 추가':QStyle.StandardPixmap.SP_FileIcon,'폴더 추가':QStyle.StandardPixmap.SP_DirIcon,
+                   '작업 열기':QStyle.StandardPixmap.SP_DialogOpenButton,'작업 저장':QStyle.StandardPixmap.SP_DialogSaveButton,
+                   '다른 이름으로 저장':QStyle.StandardPixmap.SP_DialogSaveButton,'목록에서 제외':QStyle.StandardPixmap.SP_TrashIcon}
+            if label in icons:button.setIcon(self.style().standardIcon(icons[label]));button.setIconSize(QSize(16,16))
             if label=='실행 취소':self.undo_button=button
             elif label=='다시 실행':self.redo_button=button
         self.history_dock=QDockWidget('저장한 작업',self);self.history_dock.setObjectName('photoHistoryDock')
@@ -419,8 +424,8 @@ class Window(QMainWindow):
         self.format=QComboBox(); self.format.addItems(['PNG','WEBP','JPEG']); export_controls.addWidget(self.format)
         self.export_button=QPushButton('순서대로 내보내기'); self.export_button.clicked.connect(self.export); export_controls.addWidget(self.export_button)
         self.splitter=QSplitter(Qt.Orientation.Horizontal); splitter=self.splitter
-        splitter.setHandleWidth(14); splitter.setChildrenCollapsible(False)
-        splitter.setStyleSheet('QSplitter::handle:horizontal {background:#687c94; border:4px solid #dfe5ed; border-radius:5px;} QSplitter::handle:horizontal:hover {background:#2788e8;}')
+        splitter.setHandleWidth(5); splitter.setChildrenCollapsible(False)
+        splitter.setStyleSheet('QSplitter::handle:horizontal {background:#c2cbd6;border:0;} QSplitter::handle:horizontal:hover {background:#2788e8;}')
         layout.addWidget(splitter,1)
         left=QWidget(); ll=QVBoxLayout(left)
         thumbnail_header=QHBoxLayout();ll.addLayout(thumbnail_header)
@@ -439,8 +444,8 @@ class Window(QMainWindow):
         self.main_check.setEnabled(False); self.main_check.toggled.connect(self.toggle_main)
         rl.addWidget(self.main_check)
         self.canvas=Canvas();self.canvas.setMinimumHeight(160)
-        self.preview_splitter=QSplitter(Qt.Orientation.Vertical);self.preview_splitter.setHandleWidth(14);self.preview_splitter.setChildrenCollapsible(False)
-        self.preview_splitter.setStyleSheet('QSplitter::handle:vertical {background:#687c94;border:4px solid #dfe5ed;border-radius:5px;} QSplitter::handle:vertical:hover {background:#2788e8;}')
+        self.preview_splitter=QSplitter(Qt.Orientation.Vertical);self.preview_splitter.setHandleWidth(5);self.preview_splitter.setChildrenCollapsible(False)
+        self.preview_splitter.setStyleSheet('QSplitter::handle:vertical {background:#c2cbd6;border:0;} QSplitter::handle:vertical:hover {background:#2788e8;}')
         self.preview_splitter.addWidget(self.canvas);rl.addWidget(self.preview_splitter,1)
         tools_panel=QWidget();bottom_layout=QVBoxLayout(tools_panel);bottom_layout.setContentsMargins(2,4,2,2)
         tools_scroll=QScrollArea();tools_scroll.setWidgetResizable(True);tools_scroll.setWidget(tools_panel);tools_scroll.setMinimumHeight(80)
