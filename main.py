@@ -140,6 +140,9 @@ class ImageList(QListWidget):
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setSpacing(5); self.setAcceptDrops(True)
+        # Static icon movement disables viewport drops in Qt. Enable the actual
+        # surface explicitly, otherwise explorer drops bubble up to Window.
+        self.viewport().setAcceptDrops(True)
         self.setSelectionRectVisible(False)
         self.empty_press=False
         self.hover_row=-1;self.selection_anchor=None;self.collapse_on_release=None
@@ -422,7 +425,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.40'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.41'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -1176,11 +1179,18 @@ if __name__=='__main__':
         assert window.list.dragging
         QTest.mouseRelease(viewport,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,finish)
         assert [entry['path'] for entry in window.ordered()]==smoke_paths[1:]+smoke_paths[:1]
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDragEnterEvent,QDragMoveEvent,QDropEvent
+        external=Path(smoke_folder.name)/'external.png';Image.new('RGB',(80,60),'yellow').save(external)
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(external))])
+        rect=window.list.cell_rect(1);pos=QPoint(rect.left()+3,rect.center().y())
+        for event in (QDragEnterEvent(pos,Qt.DropAction.CopyAction,mime,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier),
+                      QDragMoveEvent(pos,Qt.DropAction.CopyAction,mime,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier),
+                      QDropEvent(QPointF(pos),Qt.DropAction.CopyAction,mime,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)):
+            QApplication.sendEvent(viewport,event);assert event.isAccepted()
+        assert [entry['path'] for entry in window.ordered()]==[smoke_paths[1],str(external),smoke_paths[2],smoke_paths[0]]
         for index,entry in enumerate(window.ordered()):
             export_image(entry,Path(smoke_folder.name)/f'output{index}.png','PNG')
         window.dirty=False
         QTimer.singleShot(1000,app.quit)
     sys.exit(app.exec())
-
-
-
