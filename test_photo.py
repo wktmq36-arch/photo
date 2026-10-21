@@ -6,6 +6,35 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_undo_redo_preserves_all_current_tool_settings(self):
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'image.png';Image.new('RGB',(80,60),'red').save(path)
+   w=Window();w.add_paths([str(path)])
+   w.region_event(('add',[.1,.1,.5,.5]));w.strength.setValue(33)
+   w.region_event(('add',[.5,.5,.9,.9]));w.strength.setValue(77)
+   w.tool.setCurrentIndex(1);w.brush_size.setValue(123);w.clone_softness.setValue(68)
+   settings=(w.strength.value(),w.brush_size.value(),dict(w.tool_sizes),w.canvas.brush_radius,w.tool.currentIndex(),w.clone_softness.value())
+   for action in [w.undo,w.undo,w.redo,w.redo]:
+    action();self.assertEqual((w.strength.value(),w.brush_size.value(),dict(w.tool_sizes),w.canvas.brush_radius,w.tool.currentIndex(),w.clone_softness.value()),settings)
+   deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close()
+ def test_project_restores_last_selected_thumbnail_and_scroll(self):
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths=[]
+   for i in range(80):
+    path=Path(d)/f'{i}.png';Image.new('RGB',(10,10),'red').save(path);paths.append(str(path))
+   w=Window();w.show();w.add_paths(paths);app.processEvents()
+   w.list.setCurrentRow(70);w.list.scrollToItem(w.list.item(70));app.processEvents()
+   current=w.current()['id'];scroll=w.list.verticalScrollBar().value()
+   project=str(Path(d)/'test.photo.json');self.assertTrue(w.write_project(project))
+   w.list.setCurrentRow(0);w.list.scrollToTop();self.assertTrue(w.open_project(project));app.processEvents()
+   self.assertEqual(w.current()['id'],current);self.assertEqual(w.list.verticalScrollBar().value(),scroll)
+   deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close()
  def test_strength_slider_click_position_and_wheel_steps(self):
   from main import StrengthSlider
   from PySide6.QtCore import Qt,QPoint,QPointF

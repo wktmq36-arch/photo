@@ -422,7 +422,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.38'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.39'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -687,11 +687,7 @@ class Window(QMainWindow):
                 self.list.setCurrentRow(row,QItemSelectionModel.SelectionFlag.ClearAndSelect); break
         entry=self.current()
         self.canvas.active=min(active,len(entry['regions'])-1) if entry else -1
-        if entry and self.canvas.active>=0:
-            self.strength.blockSignals(True)
-            self.strength.setValue(entry['regions'][self.canvas.active]['strength'])
-            self.strength.blockSignals(False)
-            self.value.setText(str(self.strength.value()))
+        # Undo restores image edits only; keep the user's current tool settings.
         self.original.setChecked(False); self.render(); self.renumber(); self.dirty=True
     def restore_list(self,entries):
         wanted={entry['id'] for entry in entries}
@@ -1016,7 +1012,9 @@ class Window(QMainWindow):
     def write_project(self,path):
         if not path:return False
         try:
-            temp=Path(path+'.tmp'); temp.write_text(json.dumps({'version':1,'images':self.ordered()},ensure_ascii=False,indent=2),encoding='utf-8'); temp.replace(path)
+            entry=self.current()
+            view={'current_id':entry['id'] if entry else None,'scroll':self.list.verticalScrollBar().value()}
+            temp=Path(path+'.tmp'); temp.write_text(json.dumps({'version':1,'images':self.ordered(),'view':view},ensure_ascii=False,indent=2),encoding='utf-8'); temp.replace(path)
             self.project=str(Path(path).resolve()); self.dirty=False;self.remember_project(self.project); self.status.setText('작업 저장 완료');return True
         except Exception as exc:
             QMessageBox.warning(self,'저장 실패',str(exc));return False
@@ -1055,6 +1053,14 @@ class Window(QMainWindow):
                         if not isinstance(r.get('points'),list) or not r['points'] or not 0<r.get('radius',0)<=.1:raise ValueError('잘못된 브러시 영역')
                         if not all(len(point)==2 and all(isinstance(v,(int,float)) and 0<=v<=1 for v in point) for point in r['points']):raise ValueError('잘못된 브러시 좌표')
             self.populate(entries); self.history=[]; self.history_labels=[]; self.redo_stack=[];self.snapshot_cache={};self.update_history_controls(); self.project=str(Path(path).resolve()); self.dirty=False
+            view=data.get('view',{})
+            if isinstance(view,dict):
+                for row in range(self.list.count()):
+                    if self.list.item(row).data(Qt.ItemDataRole.UserRole)==view.get('current_id'):
+                        self.list.setCurrentRow(row,QItemSelectionModel.SelectionFlag.ClearAndSelect)
+                        self.list.scrollToItem(self.list.item(row));break
+                self.list.doItemsLayout()
+                if isinstance(view.get('scroll'),int):self.list.verticalScrollBar().setValue(view['scroll'])
             self.remember_project(self.project);return True
         except Exception as exc:
             QMessageBox.warning(self,'열기 실패',str(exc));return False
@@ -1175,4 +1181,5 @@ if __name__=='__main__':
         window.dirty=False
         QTimer.singleShot(1000,app.quit)
     sys.exit(app.exec())
+
 
