@@ -426,7 +426,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.43'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.44'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -447,9 +447,9 @@ class Window(QMainWindow):
         self.jobs=set(); self.errors=[]; self.busy=False
         root=QWidget(); self.setCentralWidget(root); layout=QVBoxLayout(root)
         top=QHBoxLayout(); layout.addLayout(top)
-        for label,fn in [('파일 추가',self.add_dialog),('폴더 추가',self.folder_dialog),('작업 열기',self.load_project),('작업 저장',self.save_project),('다른 이름으로 저장',self.save_project_as),('실행 취소',self.undo),('다시 실행',self.redo),('목록에서 제외',self.remove_selected)]:
+        for label,fn in [('새 작업',self.new_project),('파일 추가',self.add_dialog),('폴더 추가',self.folder_dialog),('작업 열기',self.load_project),('작업 저장',self.save_project),('다른 이름으로 저장',self.save_project_as),('실행 취소',self.undo),('다시 실행',self.redo),('목록에서 제외',self.remove_selected)]:
             button=QPushButton(label); button.clicked.connect(fn); top.addWidget(button)
-            icons={'파일 추가':QStyle.StandardPixmap.SP_FileIcon,'폴더 추가':QStyle.StandardPixmap.SP_DirIcon,
+            icons={'새 작업':QStyle.StandardPixmap.SP_FileIcon,'파일 추가':QStyle.StandardPixmap.SP_FileIcon,'폴더 추가':QStyle.StandardPixmap.SP_DirIcon,
                    '작업 열기':QStyle.StandardPixmap.SP_DialogOpenButton,'작업 저장':QStyle.StandardPixmap.SP_DialogSaveButton,
                    '다른 이름으로 저장':QStyle.StandardPixmap.SP_DialogSaveButton,'목록에서 제외':QStyle.StandardPixmap.SP_TrashIcon}
             if label in icons:button.setIcon(self.style().standardIcon(icons[label]));button.setIconSize(QSize(16,16))
@@ -1052,6 +1052,38 @@ class Window(QMainWindow):
     def save_project(self):
         if self.project:return self.write_project(self.project)
         return self.save_project_as()
+    def new_project(self):
+        if self.busy:
+            QMessageBox.information(self,'내보내기 중','내보내기가 끝난 후 새 작업을 시작하세요.');return False
+        if not self.confirm_discard():return False
+        self.clone_timer.stop();self.clone_live=None;self.clone_live_entry=None
+        self.clone_cache_key=None;self.composition_cache_key=None;self.cut_clipboard=None
+        self.populate([]);self.history=[];self.history_labels=[];self.redo_stack=[];self.snapshot_cache={}
+        self.project=None;self.dirty=False;self.update_history_controls();self.refresh_recent_projects()
+        self.settings.setValue('session/lastProject','');self.settings.remove('session/lastView');self.settings.sync()
+        self.status.setText('새 작업 · 그림을 추가하세요.');return True
+    def restore_last_project(self):
+        # Upgrade from previous releases using the most recently opened/saved file.
+        path=self.settings.value('session/lastProject','') if self.settings.contains('session/lastProject') else (self.recent_projects[0] if self.recent_projects else '')
+        if not path:return False
+        if not Path(path).is_file():
+            self.status.setText('이전 작업 파일을 찾을 수 없습니다. 작업 열기로 위치를 지정하세요.');return False
+        saved_view=self.settings.value('session/lastView','')
+        if not self.open_project(path):return False
+        if saved_view:
+            try:
+                view=json.loads(saved_view)
+                if view.get('path')==self.project:self.restore_project_view(view)
+            except (ValueError,TypeError,AttributeError):pass
+        return True
+    def restore_project_view(self,view):
+        if not isinstance(view,dict):return
+        for row in range(self.list.count()):
+            if self.list.item(row).data(Qt.ItemDataRole.UserRole)==view.get('current_id'):
+                self.list.setCurrentRow(row,QItemSelectionModel.SelectionFlag.ClearAndSelect)
+                self.list.scrollToItem(self.list.item(row));break
+        self.list.doItemsLayout()
+        if isinstance(view.get('scroll'),int):self.list.verticalScrollBar().setValue(view['scroll'])
     def save_project_as(self):
         path,_=QFileDialog.getSaveFileName(self,'다른 이름으로 작업 저장',self.project or '작업.photo.json','Photo project (*.photo.json)')
         if path and not path.lower().endswith('.photo.json'):path+='.photo.json'
@@ -1062,7 +1094,9 @@ class Window(QMainWindow):
             entry=self.current()
             view={'current_id':entry['id'] if entry else None,'scroll':self.list.verticalScrollBar().value()}
             temp=Path(path+'.tmp'); temp.write_text(json.dumps({'version':1,'images':self.ordered(),'view':view},ensure_ascii=False,indent=2),encoding='utf-8'); temp.replace(path)
-            self.project=str(Path(path).resolve()); self.dirty=False;self.remember_project(self.project); self.status.setText('작업 저장 완료');return True
+            self.project=str(Path(path).resolve()); self.dirty=False;self.remember_project(self.project)
+            self.settings.setValue('session/lastProject',self.project);self.settings.remove('session/lastView');self.settings.sync()
+            self.status.setText('작업 저장 완료');return True
         except Exception as exc:
             QMessageBox.warning(self,'저장 실패',str(exc));return False
     def confirm_discard(self):
@@ -1101,14 +1135,8 @@ class Window(QMainWindow):
                         if not isinstance(r.get('points'),list) or not r['points'] or not 0<r.get('radius',0)<=.1:raise ValueError('잘못된 브러시 영역')
                         if not all(len(point)==2 and all(isinstance(v,(int,float)) and 0<=v<=1 for v in point) for point in r['points']):raise ValueError('잘못된 브러시 좌표')
             self.populate(entries); self.history=[]; self.history_labels=[]; self.redo_stack=[];self.snapshot_cache={};self.update_history_controls(); self.project=str(Path(path).resolve()); self.dirty=False
-            view=data.get('view',{})
-            if isinstance(view,dict):
-                for row in range(self.list.count()):
-                    if self.list.item(row).data(Qt.ItemDataRole.UserRole)==view.get('current_id'):
-                        self.list.setCurrentRow(row,QItemSelectionModel.SelectionFlag.ClearAndSelect)
-                        self.list.scrollToItem(self.list.item(row));break
-                self.list.doItemsLayout()
-                if isinstance(view.get('scroll'),int):self.list.verticalScrollBar().setValue(view['scroll'])
+            self.restore_project_view(data.get('view',{}))
+            self.settings.setValue('session/lastProject',self.project);self.settings.remove('session/lastView');self.settings.sync()
             self.remember_project(self.project);return True
         except Exception as exc:
             QMessageBox.warning(self,'열기 실패',str(exc));return False
@@ -1174,6 +1202,10 @@ class Window(QMainWindow):
     def closeEvent(self,event):
         if self.busy:QMessageBox.information(self,'내보내기 중','내보내기가 끝난 후 종료하세요.'); event.ignore(); return
         if not self.confirm_discard():event.ignore(); return
+        if self.project:
+            entry=self.current()
+            self.settings.setValue('session/lastProject',self.project)
+            self.settings.setValue('session/lastView',json.dumps({'path':self.project,'current_id':entry['id'] if entry else None,'scroll':self.list.verticalScrollBar().value()}))
         self.settings.setValue('layout/splitter',self.splitter.saveState())
         self.settings.setValue('layout/windowState',self.saveState())
         self.settings.setValue('layout/previewVertical',self.preview_splitter.saveState())
@@ -1240,13 +1272,15 @@ if __name__=='__main__':
         cut_dialog.scale_layer(1);cut_dialog.fit(True)
         cut_dialog.add_cell([.2,.2,.8,.8]);cut_dialog.paste()
         cut_dialog.source_canvas.selection=[.25,.25,.75,.75];cut_dialog.source_selected(cut_dialog.source_canvas.selection)
-        cut_dialog.fill_original_resolution();cut_dialog.apply()
+        cut_dialog.fill_original_resolution();cut_dialog.border.setValue(1);cut_dialog.apply()
         window.apply_composition(cut_dialog.composition)
         assert window.current()['composition']['cells'][0].get('asset')
         cut_result=render_entry(read_pixels(window.current()['path']),window.current())
         assert cut_result.size==(80,60) and cut_result.getpixel((10,30))[:3]==(0,128,0)
+        assert cut_result.getpixel((0,30))[:3]==(0,0,0)
         for index,entry in enumerate(window.ordered()):
             export_image(entry,Path(smoke_folder.name)/f'output{index}.png','PNG')
         window.dirty=False
         QTimer.singleShot(1000,app.quit)
+    else:QTimer.singleShot(0,window.restore_last_project)
     sys.exit(app.exec())

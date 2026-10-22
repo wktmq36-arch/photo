@@ -242,6 +242,9 @@ class CutEditor(QDialog):
             button=QPushButton(label);button.clicked.connect(fn);bottom.addWidget(button)
         bottom.addWidget(QLabel('흰 간격 / 테두리 px'))
         self.gutter=QSpinBox();self.gutter.setRange(0,min(200,self.base.width//10));self.gutter.valueChanged.connect(self.change_gutter);bottom.addWidget(self.gutter)
+        bottom.addWidget(QLabel('선택 컷 검은선 px'))
+        self.border=QSpinBox();self.border.setRange(0,min(200,self.base.width//10));self.border.setToolTip('0은 테두리 없음. 선택한 컷에 적용되고 출력에도 포함됩니다.')
+        self.border.valueChanged.connect(self.change_border);bottom.addWidget(self.border)
         self.info=QLabel();bottom.addWidget(self.info,1)
         buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText('적용');buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('취소')
@@ -309,6 +312,7 @@ class CutEditor(QDialog):
         self.gutter.blockSignals(True);self.gutter.setValue(round(self.composition.get('gutter',0.)*self.base.width));self.gutter.blockSignals(False)
         self.info.setText(f'컷 {len(self.canvas.cells)}개 · 선택 {self.canvas.active+1}번' if self.canvas.active>=0 else '컷을 그리거나 원래 해상도로 채우세요.')
         cell=self.cell();self.scale_label.setText(f'{cell.get("scale",1.)*100:.0f}%' if cell and 'asset' in cell else '')
+        self.border.blockSignals(True);self.border.setEnabled(cell is not None);self.border.setValue(round(cell.get('border',0.)*self.base.width) if cell else 0);self.border.blockSignals(False)
     def pick(self,event):
         index,point,mode=event;self.finish_gesture();self.canvas.active=index
         if mode in ('vertical','horizontal'):
@@ -332,6 +336,10 @@ class CutEditor(QDialog):
     def change_gutter(self,value):
         if value==round(self.composition.get('gutter',0.)*self.base.width):return
         self.record();self.composition['gutter']=value/self.base.width;self.refresh()
+    def change_border(self,value):
+        cell=self.cell()
+        if cell is None or value==round(cell.get('border',0.)*self.base.width):return
+        self.record();cell['border']=value/self.base.width;self.refresh()
     def finish_gesture(self):
         if self.gesture is not None and self.gesture!=self.composition:
             self.history.append(self.gesture);self.history=self.history[-200:];self.redo_history.clear()
@@ -382,7 +390,7 @@ class CutEditor(QDialog):
     def remove_layer(self):
         cell=self.cell()
         if not cell or 'asset' not in cell:return
-        self.record();self.composition['cells'][self.canvas.active]={'rect':cell['rect'][:]};self.refresh()
+        self.record();self.composition['cells'][self.canvas.active]={k:v for k,v in cell.items() if k not in ('asset','scale','offset')};self.refresh()
     def delete_cell(self):
         if self.cell() is None:return
         self.record();self.composition['cells'].pop(self.canvas.active);self.refresh()

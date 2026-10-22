@@ -6,6 +6,79 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_cut_black_border_respects_gap_overlap_and_exports(self):
+  from composition import pixel_asset,render_composition,validate_composition
+  key,data=pixel_asset(Image.new('RGBA',(100,100),'red'))
+  composition={'assets':{key:data},'cells':[{'rect':[.1,.1,.9,.9],'asset':key,'border':.02}],'gutter':.01,'freeform':True}
+  base=Image.new('RGBA',(200,200),'green');result=render_composition(base,composition)
+  self.assertEqual(result.getpixel((20,100)),(255,255,255,255));self.assertEqual(result.getpixel((22,100)),(0,0,0,255));self.assertEqual(result.getpixel((30,100)),(255,0,0,255))
+  self.assertEqual(result.getpixel((10,100)),base.getpixel((10,100)))
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'base.png';base.save(path);output=Path(d)/'export.png'
+   export_image({'path':str(path),'regions':[],'composition':composition},output,'PNG')
+   with Image.open(output) as exported:self.assertEqual(exported.convert('RGBA').tobytes(),result.tobytes())
+  composition['cells'][0]['border']=float('nan')
+  with self.assertRaises(ValueError):validate_composition(composition)
+ def test_cut_black_border_is_per_cell_persists_and_undoes(self):
+  from cut_editor import CutEditor
+  from PySide6.QtGui import QIcon
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'base.png';Image.new('RGB',(400,200),'red').save(path)
+   entry={'id':'s','path':str(path),'regions':[]};editor=CutEditor(entry,[entry],[QIcon()])
+   editor.add_cell([.1,.1,.45,.9]);editor.paste();editor.border.setValue(6)
+   self.assertEqual(editor.cell()['border'],.015);editor.undo();self.assertNotIn('border',editor.cell());editor.redo();self.assertEqual(editor.cell()['border'],.015)
+   editor.add_cell([.55,.1,.9,.9]);self.assertEqual(editor.border.value(),0)
+   self.assertNotIn('border',editor.cell());editor.canvas.active=0;editor.refresh();self.assertEqual(editor.border.value(),6)
+   editor.apply();w=Window();w.add_paths([str(path)]);w.apply_composition(editor.composition)
+   saved=str(Path(d)/'border.photo.json');w.write_project(saved);self.assertTrue(w.open_project(saved));self.assertEqual(w.current()['composition']['cells'][0]['border'],.015)
+   deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close();editor.reject()
+ def test_last_project_reopens_and_new_project_requires_discard_confirmation(self):
+  from unittest.mock import patch
+  from PySide6.QtWidgets import QMessageBox
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'source.png';Image.new('RGB',(80,60),'red').save(path)
+   w=Window();w.add_paths([str(path)]);project=str(Path(d)/'saved.photo.json');w.write_project(project)
+   saved_id=w.current()['id'];w.dirty=False;w.close()
+   reopened=Window();self.assertTrue(reopened.restore_last_project());self.assertEqual(reopened.project,project);self.assertEqual(reopened.current()['id'],saved_id)
+   reopened.region_event(('add',[.1,.1,.5,.5]));before=len(reopened.history)
+   with patch('main.QMessageBox.exec',return_value=QMessageBox.StandardButton.Cancel):self.assertFalse(reopened.new_project())
+   self.assertEqual(reopened.project,project);self.assertEqual(len(reopened.history),before)
+   with patch('main.QMessageBox.exec',return_value=QMessageBox.StandardButton.Save):self.assertTrue(reopened.new_project())
+   self.assertIsNone(reopened.project);self.assertEqual(reopened.list.count(),0);self.assertFalse(reopened.history);self.assertFalse(reopened.redo_stack);self.assertFalse(reopened.dirty)
+   self.assertFalse(reopened.restore_last_project())
+   self.assertTrue(Path(project).is_file());import json
+   self.assertTrue(json.loads(Path(project).read_text(encoding='utf-8'))['images'][0]['regions'])
+   deadline=time.monotonic()+10
+   while reopened.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   reopened.close()
+ def test_last_project_tracks_open_not_recent_listing_and_restores_close_selection(self):
+  import json
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths=[]
+   for i in range(30):
+    path=Path(d)/f'{i}.png';Image.new('RGB',(10,10),'red').save(path);paths.append(str(path))
+   w=Window();w.show();w.add_paths(paths);project=str(Path(d)/'actual.photo.json');w.write_project(project)
+   w.list.setCurrentRow(25);w.list.scrollToItem(w.list.item(25));app.processEvents();current=w.current()['id'];scroll=w.list.verticalScrollBar().value()
+   unrelated=Path(d)/'other.photo.json';unrelated.write_text(json.dumps({'version':1,'images':[]}),encoding='utf-8');w.remember_project(unrelated)
+   w.close();reopened=Window();reopened.show();app.processEvents();self.assertTrue(reopened.restore_last_project());app.processEvents()
+   self.assertEqual(reopened.project,project);self.assertEqual(reopened.current()['id'],current);self.assertEqual(reopened.list.verticalScrollBar().value(),scroll)
+   reopened.dirty=False;reopened.close()
+ def test_last_project_upgrade_and_missing_path(self):
+  import json
+  from unittest.mock import patch
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'saved.photo.json';path.write_text(json.dumps({'version':1,'images':[]}),encoding='utf-8')
+   w=Window();w.settings.remove('session/lastProject');w.remember_project(path)
+   self.assertTrue(w.restore_last_project());self.assertEqual(w.project,str(path))
+   w.settings.setValue('session/lastProject',str(Path(d)/'missing.photo.json'))
+   with patch('main.QMessageBox.warning') as warning:self.assertFalse(w.restore_last_project());warning.assert_not_called()
+   w.dirty=False;w.close()
  def test_free_cut_overlap_has_topmost_selection_and_borders(self):
   from cut_editor import CutEditor
   from composition import pixel_asset,render_composition

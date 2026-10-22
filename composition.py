@@ -38,11 +38,20 @@ def validate_composition(value,check_images=False):
         if not isinstance(cell,dict):raise ValueError('잘못된 컷 데이터')
         rect=cell.get('rect')
         if not numbers(rect,4) or not (0<=rect[0]<rect[2]<=1 and 0<=rect[1]<rect[3]<=1):raise ValueError('잘못된 컷 범위')
+        border=cell.get('border',0.)
+        if not isinstance(border,(int,float)) or not math.isfinite(border) or not 0<=border<=.1:raise ValueError('잘못된 컷 테두리 두께')
         if 'asset' in cell:
             if cell['asset'] not in value['assets']:raise ValueError('컷 이미지 누락')
             scale=cell.get('scale',1.)
             if not isinstance(scale,(int,float)) or not math.isfinite(scale) or not .05<=scale<=32:raise ValueError('잘못된 컷 배율')
             if not numbers(cell.get('offset',[0.,0.]),2) or any(abs(v)>100 for v in cell.get('offset',[0.,0.])):raise ValueError('잘못된 컷 위치')
+
+
+def panel_border(image,box,border,inset=0):
+    if not border:return
+    left,top,right,bottom=box
+    rect=(left+inset,top+inset,right-inset-1,bottom-inset-1)
+    if rect[2]>=rect[0] and rect[3]>=rect[1]:ImageDraw.Draw(image).rectangle(rect,outline='black',width=border)
 
 
 def render_composition(image,composition,cache=None):
@@ -52,10 +61,13 @@ def render_composition(image,composition,cache=None):
     for cell in composition['cells']:
         key=cell.get('asset')
         if not key:
+            box=tuple(round(v*(width if i%2==0 else height)) for i,v in enumerate(cell['rect']))
+            gap=round(composition.get('gutter',0.)*width)
             if composition.get('freeform') and composition.get('gutter'):
                 box=tuple(round(v*(width if i%2==0 else height)) for i,v in enumerate(cell['rect']))
                 gap=round(composition['gutter']*width)
                 if gap:ImageDraw.Draw(result).rectangle((box[0],box[1],max(box[0],box[2]-1),max(box[1],box[3]-1)),outline='white',width=gap)
+            panel_border(result,box,round(cell.get('border',0.)*width),gap if composition.get('freeform') else (gap+1)//2)
             continue
         if key not in cache:cache[key]=decode_asset(composition['assets'][key])
         source=cache[key];x1,y1,x2,y2=cell['rect']
@@ -71,6 +83,8 @@ def render_composition(image,composition,cache=None):
         if composition.get('freeform'):
             gap=round(composition.get('gutter',0.)*width)
             if gap:ImageDraw.Draw(background).rectangle((0,0,cw-1,ch-1),outline='white',width=gap)
+        gap=round(composition.get('gutter',0.)*width)
+        panel_border(background,(0,0,cw,ch),round(cell.get('border',0.)*width),gap if composition.get('freeform') else (gap+1)//2)
         result.paste(background,box)
     gap=round(composition.get('gutter',0.)*width)
     if gap and not composition.get('freeform'):
