@@ -6,6 +6,52 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_main_only_view_keeps_order_and_navigates_visible_items(self):
+  import json
+  from PySide6.QtCore import Qt
+  from PySide6.QtTest import QTest
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths=[]
+   for i in range(7):
+    path=Path(d)/f'{i}.png';Image.new('RGB',(80,60),(i*30,0,0)).save(path);paths.append(str(path))
+   w=Window();w.show();w.activateWindow();w.add_paths(paths)
+   for i in (1,3,5):w.ordered()[i]['main_selected']=True
+   w.renumber();w.dirty=False;history=len(w.history);items=[w.list.item(i) for i in range(7)]
+   w.main_only.setChecked(True);app.processEvents()
+   self.assertEqual(w.visible_rows(),[1,3,5]);self.assertEqual(w.list.currentRow(),1);self.assertFalse(w.dirty);self.assertEqual(len(w.history),history)
+   w.list.setFocus();QTest.keyClick(w.list,Qt.Key.Key_Right);self.assertEqual(w.list.currentRow(),3)
+   QTest.keyClick(w.list,Qt.Key.Key_Right);self.assertEqual(w.list.currentRow(),5)
+   QTest.keyClick(w.list,Qt.Key.Key_Right);self.assertEqual(w.list.currentRow(),5)
+   for row in (1,3,5):self.assertEqual(w.list.row_at(w.list.cell_rect(row).center()),row)
+   rect=w.list.visualItemRect(w.list.item(3));self.assertEqual(w.list.target_at(rect.topLeft()),3)
+   QTest.keyClick(w.list,Qt.Key.Key_A,Qt.KeyboardModifier.ControlModifier)
+   self.assertEqual([w.list.row(item) for item in w.list.selectedItems()],[1,3,5])
+   self.assertTrue(all(not w.list.item(row).isSelected() for row in (0,2,4,6)))
+   project=str(Path(d)/'filtered.photo.json');w.write_project(project)
+   self.assertEqual([e['path'] for e in json.loads(Path(project).read_text(encoding='utf-8'))['images']],paths)
+   w.main_only.setChecked(False);self.assertEqual(w.visible_rows(),list(range(7)));self.assertEqual([e['path'] for e in w.ordered()],paths)
+   self.assertTrue(all(w.list.item(i) is item for i,item in enumerate(items)))
+   deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close()
+ def test_main_only_updates_on_unmark_undo_and_handles_empty_view(self):
+  from PySide6.QtCore import QPoint
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths=[]
+   for i in range(4):
+    path=Path(d)/f'{i}.png';Image.new('RGB',(40,40),'red').save(path);paths.append(str(path))
+   w=Window();w.add_paths(paths);w.set_main_for_ids([w.ordered()[i]['id'] for i in (1,3)],True)
+   w.main_only.setChecked(True);self.assertEqual(w.list.currentRow(),1)
+   w.toggle_main(False);self.assertEqual(w.visible_rows(),[3]);self.assertEqual(w.list.currentRow(),3)
+   w.undo();self.assertEqual(w.visible_rows(),[1,3]);self.assertEqual(w.list.currentRow(),1)
+   w.set_main_for_ids([e['id'] for e in w.ordered()],False);self.assertEqual(w.visible_rows(),[]);self.assertIsNone(w.current())
+   self.assertEqual(w.list.target_at(QPoint(20,20)),4);w.list.selectAll();self.assertFalse(w.list.selectedItems())
+   w.main_only.setChecked(False);self.assertEqual(w.visible_rows(),[0,1,2,3]);self.assertEqual([e['path'] for e in w.ordered()],paths)
+   deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close()
  def test_inline_cut_mode_keyboard_live_border_save_and_normal_preview(self):
   import json
   from PySide6.QtCore import Qt

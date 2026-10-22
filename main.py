@@ -129,6 +129,7 @@ class ImageList(QListWidget):
     def row_at(self,pos):
         if not self.viewport().rect().contains(pos):return -1
         for row in range(self.count()):
+            if self.item(row).isHidden():continue
             if self.cell_rect(row).contains(pos):return row
         return -1
     def mousePressEvent(self,event):
@@ -151,7 +152,8 @@ class ImageList(QListWidget):
         if shift:
             anchor=next((i for i in range(self.count()) if self.item(i).data(Qt.ItemDataRole.UserRole)==self.selection_anchor),max(0,self.currentRow()))
             if not control:self.clearSelection()
-            for i in range(min(anchor,row),max(anchor,row)+1):self.item(i).setSelected(True)
+            for i in range(min(anchor,row),max(anchor,row)+1):
+                if not self.item(i).isHidden():self.item(i).setSelected(True)
         elif control:
             item.setSelected(not item.isSelected());self.selection_anchor=item.data(Qt.ItemDataRole.UserRole)
         elif item.isSelected():
@@ -170,8 +172,10 @@ class ImageList(QListWidget):
         # toward the first item of the next row.
         bands={}
         for row in range(self.count()):
+            if self.item(row).isHidden():continue
             rect=self.visualItemRect(self.item(row))
             bands.setdefault(rect.top(),[]).append((row,rect))
+        if not bands:self.drop_marker=None;return self.count()
         band=min(bands.values(),key=lambda items:abs(items[0][1].center().y()-pos.y()))
         band.sort(key=lambda pair:pair[1].center().x())
         if pos.y()>max(rect.bottom() for _,rect in band)+self.gridSize().height()/2:
@@ -232,6 +236,7 @@ class ImageList(QListWidget):
         super().paintEvent(event)
         painter=QPainter(self.viewport())
         for row in range(self.count()):
+            if self.item(row).isHidden():continue
             rect=self.cell_rect(row).adjusted(2,2,-2,-2)
             if not rect.intersects(self.viewport().rect()):continue
             selected=self.item(row).isSelected();hover=row==self.hover_row
@@ -242,11 +247,16 @@ class ImageList(QListWidget):
         painter.end()
         if self.drop_target is None or not self.count():return
         painter=QPainter(self.viewport()); painter.setPen(QPen(QColor('#ffab40'),4))
-        if hasattr(self,'drop_marker'):
+        if getattr(self,'drop_marker',None) is not None:
             x,top,bottom=self.drop_marker
             painter.drawLine(x,top,x,bottom)
             painter.drawLine(x-5,top,x+5,top)
             painter.drawLine(x-5,bottom,x+5,bottom)
+    def selectAll(self):
+        blocked=self.blockSignals(True)
+        for row in range(self.count()):self.item(row).setSelected(not self.item(row).isHidden())
+        self.blockSignals(blocked)
+        if not blocked:self.itemSelectionChanged.emit()
     MIME = 'application/x-photo-item-ids'
     def startDrag(self, supported_actions):
         ids=[self.item(row).data(Qt.ItemDataRole.UserRole) for row in range(self.count()) if self.item(row).isSelected()]
@@ -400,7 +410,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.46'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.47'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -470,6 +480,8 @@ class Window(QMainWindow):
         left=QWidget(); ll=QVBoxLayout(left)
         thumbnail_header=QHBoxLayout();ll.addLayout(thumbnail_header)
         thumbnail_header.addWidget(QLabel('드래그로 순서 변경 · Delete로 제외'))
+        self.main_only=QCheckBox('메인만 보기');self.main_only.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.main_only.toggled.connect(self.apply_main_filter);thumbnail_header.addWidget(self.main_only)
         thumbnail_header.addStretch();self.selection_count=QLabel('선택 0장');thumbnail_header.addWidget(self.selection_count)
         self.list=ImageList(); ll.addWidget(self.list); splitter.addWidget(left)
         self.list.itemSelectionChanged.connect(self.update_selection_count)
@@ -699,7 +711,8 @@ class Window(QMainWindow):
         self.list.clear(); self.entries={}
         for entry in entries: self.insert_entry(entry)
         self.renumber()
-        if self.list.count(): self.list.setCurrentRow(0)
+        visible=self.visible_rows()
+        if visible:self.list.setCurrentRow(visible[0])
         else: self.canvas.pixmap=None; self.canvas.update()
     def insert_entry(self,entry,row=None):
         entry.setdefault('main_selected',False)
@@ -750,7 +763,7 @@ class Window(QMainWindow):
         if insertion_row is None:
             for path in paths:self.insert_entry({'id':uuid.uuid4().hex,'path':path,'regions':[]})
             self.renumber()
-            if self.list.currentRow()<0:self.list.setCurrentRow(0)
+            if self.list.currentRow()<0 and self.visible_rows():self.list.setCurrentRow(self.visible_rows()[0])
             return
         row=max(0,min(self.list.count(),insertion_row))
         self.list.blockSignals(True);self.list.setUpdatesEnabled(False)
@@ -772,6 +785,30 @@ class Window(QMainWindow):
             item.setData(MOSAIC_ROLE,bool(entry['regions']))
             item.setData(MAIN_ROLE,bool(entry.get('main_selected',False)))
             item.setToolTip(entry['path']+(f'\n모자이크 적용 · {len(entry["regions"])}개 영역' if entry['regions'] else '\n모자이크 없음'))
+        self.apply_main_filter()
+    def visible_rows(self):
+        return [row for row in range(self.list.count()) if not self.list.item(row).isHidden()]
+    def apply_main_filter(self,*args):
+        only=self.main_only.isChecked();old=self.list.currentItem();old_row=self.list.currentRow()
+        blocked=self.list.blockSignals(True);changed=False
+        try:
+            for row in range(self.list.count()):
+                item=self.list.item(row);entry=self.entries[item.data(Qt.ItemDataRole.UserRole)]
+                hidden=only and not entry.get('main_selected',False)
+                if item.isHidden()!=hidden:item.setHidden(hidden);changed=True
+                if hidden:item.setSelected(False)
+            visible=self.visible_rows()
+            if visible and (self.list.currentItem() is None or self.list.currentItem().isHidden()):
+                selected=[row for row in visible if self.list.item(row).isSelected()]
+                target=selected[0] if selected else next((row for row in visible if row>=old_row),visible[-1])
+                self.list.setCurrentRow(target,QItemSelectionModel.SelectionFlag.NoUpdate if selected else QItemSelectionModel.SelectionFlag.ClearAndSelect)
+            elif not visible:self.list.setCurrentRow(-1);self.list.clearSelection()
+            if changed:self.list.hover_row=-1;self.list.doItemsLayout()
+        finally:self.list.blockSignals(blocked)
+        current=self.list.currentItem()
+        if current:self.list.selection_anchor=current.data(Qt.ItemDataRole.UserRole)
+        if not blocked and current is not old:self.list.currentItemChanged.emit(current,old)
+        self.update_selection_count();self.list.viewport().update()
         self.status.setText(f'총 {self.list.count()}장 · 모자이크 {sum(bool(e["regions"]) for e in self.entries.values())}장 · 메인 {sum(bool(e.get("main_selected")) for e in self.entries.values())}장')
     def order_changed(self):self.dirty=True; self.renumber()
     def remove_selected(self):
@@ -796,8 +833,10 @@ class Window(QMainWindow):
         self.list.blockSignals(False)
         self.renumber(); self.selection_changed()
     def navigate(self,step):
-        if not self.list.count():return
-        row=max(0,min(self.list.count()-1,self.list.currentRow()+step))
+        visible=self.visible_rows()
+        if not visible:return
+        index=visible.index(self.list.currentRow()) if self.list.currentRow() in visible else 0
+        row=visible[max(0,min(len(visible)-1,index+step))]
         self.list.setCurrentRow(row,QItemSelectionModel.SelectionFlag.ClearAndSelect)
         item=self.list.item(row)
         self.list.selection_anchor=item.data(Qt.ItemDataRole.UserRole)
@@ -1079,6 +1118,7 @@ class Window(QMainWindow):
         if not isinstance(view,dict):return
         for row in range(self.list.count()):
             if self.list.item(row).data(Qt.ItemDataRole.UserRole)==view.get('current_id'):
+                if self.list.item(row).isHidden():break
                 self.list.setCurrentRow(row,QItemSelectionModel.SelectionFlag.ClearAndSelect)
                 self.list.scrollToItem(self.list.item(row));break
         self.list.doItemsLayout()
@@ -1285,6 +1325,10 @@ if __name__=='__main__':
         inline.canvas.active=len(inline.composition['cells'])-1;inline.set_mode('move');inline.nudge((1,0));inline.border.setValue(2)
         inline.final_preview.setChecked(True);assert not inline.canvas.show_guides
         window.finish_cut_mode(True);assert window.cut_editor is None
+        smoke_order=[entry['path'] for entry in window.ordered()]
+        window.set_main_for_ids([window.ordered()[i]['id'] for i in (0,3)],True)
+        window.main_only.setChecked(True);assert window.visible_rows()==[0,3]
+        window.main_only.setChecked(False);assert [entry['path'] for entry in window.ordered()]==smoke_order
         for index,entry in enumerate(window.ordered()):
             export_image(entry,Path(smoke_folder.name)/f'output{index}.png','PNG')
         window.dirty=False
