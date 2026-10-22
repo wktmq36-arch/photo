@@ -412,7 +412,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.54'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.56'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -595,6 +595,33 @@ class Window(QMainWindow):
         self.update_history_controls()
         self.setAcceptDrops(True)
         self.header.installEventFilter(self);self.adjust_header()
+        saved_geometry=self.settings.value('layout/windowGeometry')
+        if saved_geometry is not None:self.restoreGeometry(saved_geometry)
+        self._last_window_geometry=self.saveGeometry();self._placement_ready=True
+    def remember_window_geometry(self):
+        if not self._placement_ready or self._restoring_placement or not self.isVisible() or self.isMinimized():return
+        self._last_window_geometry=self.saveGeometry()
+    def moveEvent(self,event):
+        super().moveEvent(event);self.remember_window_geometry()
+    def resizeEvent(self,event):
+        super().resizeEvent(event);self.remember_window_geometry()
+    def changeEvent(self,event):
+        if event.type()==QEvent.Type.WindowStateChange and self._placement_ready:
+            if self.isMinimized():
+                # Ignore the minimized native window coordinates; retain its monitor.
+                self._minimized_geometry=self._last_window_geometry
+            elif event.oldState() & Qt.WindowState.WindowMinimized:
+                self._restoring_placement=True
+                QTimer.singleShot(0,self.restore_minimized_geometry)
+        super().changeEvent(event)
+    def restore_minimized_geometry(self):
+        try:
+            if self._minimized_geometry is not None and not self.isMinimized():
+                self.restoreGeometry(self._minimized_geometry)
+                self._minimized_geometry=None
+        finally:self._restoring_placement=False
+        self.remember_window_geometry()
+
     def eventFilter(self,watched,event):
         if watched is self.header and event.type()==QEvent.Type.Resize:self.adjust_header()
         return super().eventFilter(watched,event)
@@ -1342,6 +1369,8 @@ class Window(QMainWindow):
             entry=self.current()
             self.settings.setValue('session/lastProject',self.project)
             self.settings.setValue('session/lastView',json.dumps({'path':self.project,'current_id':entry['id'] if entry else None,'scroll':self.list.verticalScrollBar().value()}))
+        geometry=self._last_window_geometry if self.isMinimized() else self.saveGeometry()
+        if geometry is not None:self.settings.setValue('layout/windowGeometry',geometry)
         self.settings.setValue('layout/splitter',self.splitter.saveState())
         self.settings.setValue('layout/windowState',self.saveState())
         self.settings.setValue('layout/previewVertical',self.preview_splitter.saveState())

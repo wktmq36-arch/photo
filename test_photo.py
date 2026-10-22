@@ -1,11 +1,59 @@
 import unittest,tempfile,os,time
 from pathlib import Path
 from PIL import Image
-os.environ['QT_QPA_PLATFORM']='offscreen'
+os.environ['QT_QPA_PLATFORM']='offscreen:configfile='+os.path.relpath(Path(__file__).with_name('test_screens.json'))
 from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_cut_freehand_and_straight_lines_undo_save_and_export(self):
+  from PySide6.QtGui import QIcon
+  from PySide6.QtCore import Qt,QPointF
+  from PySide6.QtTest import QTest
+  from cut_editor import CutEditor
+  from composition import render_composition,validate_composition
+  from imaging import export_pair
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   d=Path(d);source=d/'source.png';Image.new('RGBA',(200,200),'white').save(source)
+   entry={'id':'line-target','path':str(source),'regions':[]}
+   editor=CutEditor(entry,[entry],[QIcon()]);editor.show();app.processEvents();canvas=editor.canvas
+   for mode in ('ink','line'):
+    editor.set_mode(mode);canvas.update_target();r=canvas.target
+    points=[QPointF(r.left()+r.width()*x,r.top()+r.height()*y).toPoint() for x,y in ((.2,.2),(.5,.7),(.8,.2))]
+    QTest.mousePress(canvas,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,points[0])
+    QTest.mouseMove(canvas,points[1]);QTest.mouseMove(canvas,points[2]);QTest.mouseRelease(canvas,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,points[2]);app.processEvents()
+   self.assertEqual(len(editor.composition['lines']),2);self.assertGreaterEqual(len(editor.composition['lines'][0]['points']),3);self.assertEqual(len(editor.composition['lines'][1]['points']),2)
+   history_count=len(editor.history);editor.line_width.setValue(10);self.assertEqual(len(editor.history),history_count)
+   editor.undo();self.assertEqual(len(editor.composition['lines']),1);editor.redo();self.assertEqual(len(editor.composition['lines']),2)
+   editor.remove_last_line();self.assertEqual(len(editor.composition['lines']),1);editor.undo();composition=editor.composition;validate_composition(composition,True)
+   expected=render_composition(Image.new('RGBA',(200,200),'white'),composition);self.assertEqual(expected.getpixel((100,40))[:3],(0,0,0));editor.reject()
+   w=Window();w.populate([dict(entry,composition=composition)]);project=d/'lines.photo.json';w.write_project(str(project));w.close()
+   w=Window();self.assertTrue(w.open_project(str(project)));export_pair(w.current(),1,d,'PNG','a')
+   for folder in ('a_cen','a_uncen'):
+    with Image.open(d/folder/'001.png') as output:self.assertEqual(output.convert('RGBA').tobytes(),expected.tobytes())
+   w.close()
+ def test_window_geometry_survives_restart_and_minimized_close(self):
+  from main import QSettings
+  app=QApplication.instance() or QApplication([])
+  settings=QSettings('PhotoOrganizer','Photo');settings.remove('layout/windowGeometry')
+  w=Window();w.show();app.processEvents();w.resize(1100,700);w.move(-1800,30);app.processEvents()
+  expected=w.geometry();w.close()
+  reopened=Window();reopened.show();app.processEvents();self.assertEqual(reopened.size(),expected.size());self.assertLessEqual((reopened.pos()-expected.topLeft()).manhattanLength(),4)
+  reopened.showMinimized();app.processEvents();reopened.close()
+  again=Window();again.show();app.processEvents();self.assertFalse(again.isMinimized());self.assertEqual(again.size(),expected.size());self.assertLessEqual((again.pos()-expected.topLeft()).manhattanLength(),6);again.close()
+ def test_minimize_restore_reapplies_previous_geometry_and_maximized_state(self):
+  from main import QSettings
+  from PySide6.QtCore import QRect
+  app=QApplication.instance() or QApplication([])
+  settings=QSettings('PhotoOrganizer','Photo');settings.remove('layout/windowGeometry')
+  w=Window();w.show();app.processEvents();w.resize(1100,700);w.move(-1800,35);app.processEvents();expected=w.geometry()
+  w.showMinimized();app.processEvents()
+  self.assertIsNotNone(w._minimized_geometry)
+  w.showNormal();w.setGeometry(QRect(70,80,1000,600));app.processEvents()
+  self.assertEqual(w.size(),expected.size());self.assertLessEqual((w.pos()-expected.topLeft()).manhattanLength(),4)
+  w.showMaximized();app.processEvents();w.showMinimized();app.processEvents();w.showNormal();app.processEvents()
+  self.assertTrue(w.isMaximized());w.close()
  def test_uncensored_export_keeps_nested_crop_clone_and_panel_edits(self):
   import copy
   from imaging import render_entry,export_pair,edit_layers,read_pixels

@@ -1,7 +1,7 @@
 import copy
 from pathlib import Path
 from PySide6.QtCore import Qt,QRectF,QPointF,QSize,Signal,QTimer
-from PySide6.QtGui import QPainter,QColor,QPen,QImage,QPixmap,QKeySequence,QShortcut
+from PySide6.QtGui import QPainter,QColor,QPen,QImage,QPixmap,QKeySequence,QShortcut,QPainterPath
 from PySide6.QtWidgets import (QDialog,QWidget,QVBoxLayout,QHBoxLayout,QPushButton,QLabel,
     QListWidget,QListWidgetItem,QSplitter,QDialogButtonBox,QMessageBox,QSpinBox,QLineEdit,
     QAbstractItemView,QMenu,QCheckBox)
@@ -137,13 +137,26 @@ class SourceCanvas(ImageCanvas):
 class PanelCanvas(ImageCanvas):
     picked=Signal(object);dragged=Signal(object);zoomed=Signal(object);copied=Signal(object);finished=Signal()
     created=Signal(object);geometryChanged=Signal(object)
-    nudged=Signal(object)
+    nudged=Signal(object);lineDrawn=Signal(object)
     def __init__(self):
         super().__init__();self.cells=[];self.active=0;self.mode='frame';self.action=None;self.show_guides=True
+        self.ink_points=[];self.ink_width=.005
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
     def paintEvent(self,event):
         painter=QPainter(self);self.paint_image(painter)
         if not self.pixmap or not self.show_guides:return
+        if self.ink_points:
+            painter.save();painter.setClipRect(self.target);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(QPen(QColor('black'),max(1,self.ink_width*self.target.width()),Qt.PenStyle.SolidLine,Qt.PenCapStyle.RoundCap,Qt.PenJoinStyle.RoundJoin))
+            path=QPainterPath()
+            for index,(x,y) in enumerate(self.ink_points):
+                point=QPointF(self.target.x()+x*self.target.width(),self.target.y()+y*self.target.height())
+                if index==0:path.moveTo(point)
+                else:path.lineTo(point)
+            if len(self.ink_points)==1:painter.drawPoint(path.currentPosition())
+            else:painter.drawPath(path)
+            painter.restore()
+        if self.mode in ('ink','line'):return
         painter.setBrush(Qt.BrushStyle.NoBrush)
         for index,cell in enumerate(self.cells):
             rect=self.image_rect(cell['rect']);painter.setPen(QPen(QColor('#ffb347' if index==self.active else '#65baff'),2 if index==self.active else 1))
@@ -157,9 +170,11 @@ class PanelCanvas(ImageCanvas):
         if not self.show_guides:return
         if event.button()!=Qt.MouseButton.LeftButton or not self.pixmap:return
         self.update_target();pos=event.position();self.handle=None
-        if self.mode not in ('draw','copy','vertical','horizontal') and 0<=self.active<len(self.cells):self.handle=self.handle_at(self.cells[self.active]['rect'],pos)
+        if self.mode not in ('draw','copy','vertical','horizontal','ink','line') and 0<=self.active<len(self.cells):self.handle=self.handle_at(self.cells[self.active]['rect'],pos)
         if not self.handle and not self.target.contains(pos):return
         self.start=pos;self.end=pos
+        if self.mode in ('ink','line'):
+            self.action=self.mode;self.ink_points=[self.point(pos)];self.update();return
         if self.mode in ('draw','copy'):self.action=self.mode;self.update();return
         point=self.point(pos)
         index=self.active if self.handle else next((i for i in reversed(range(len(self.cells))) if self.image_rect(self.cells[i]['rect']).contains(pos)),-1)
@@ -171,7 +186,11 @@ class PanelCanvas(ImageCanvas):
         if self.continue_pan(event):return
         if self.start is None:return
         pos=event.position()
-        if self.action=='resize':self.geometryChanged.emit((self.active,self.resized_rect(self.original_rect,self.point(pos),self.handle)))
+        if self.action in ('ink','line'):
+            point=self.point(pos)
+            if self.action=='line':self.ink_points=self.ink_points[:1]+[point]
+            elif point!=self.ink_points[-1]:self.ink_points.append(point)
+        elif self.action=='resize':self.geometryChanged.emit((self.active,self.resized_rect(self.original_rect,self.point(pos),self.handle)))
         elif self.action=='frame':
             a,b=self.point(self.start),self.point(pos)
             self.geometryChanged.emit((self.active,self.moved_rect(self.original_rect,[b[0]-a[0],b[1]-a[1]])))
@@ -181,6 +200,11 @@ class PanelCanvas(ImageCanvas):
     def mouseReleaseEvent(self,event):
         if self.end_pan(event):return
         if self.start is None:return
+        if self.action in ('ink','line'):
+            point=self.point(event.position())
+            if self.action=='line':self.ink_points=self.ink_points[:1]+[point]
+            elif point!=self.ink_points[-1]:self.ink_points.append(point)
+            self.lineDrawn.emit({'points':copy.deepcopy(self.ink_points),'width':self.ink_width});self.ink_points=[]
         if self.action in ('draw','copy'):
             rect=self.rectangle(self.start,event.position())
             if self.valid_drag(rect):
@@ -188,7 +212,7 @@ class PanelCanvas(ImageCanvas):
                 else:self.copied.emit(rect)
         self.start=None;self.end=None;self.action=None;self.finished.emit();self.update()
     def wheelEvent(self,event):
-        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:self.zoom_view(event)
+        if self.mode in ('ink','line') or event.modifiers() & Qt.KeyboardModifier.ControlModifier:self.zoom_view(event)
         elif self.target.contains(event.position()) and 0<=self.active<len(self.cells):self.zoomed.emit(event.angleDelta().y()/120);event.accept()
         else:event.ignore()
     def keyPressEvent(self,event):
@@ -244,7 +268,15 @@ class CutEditor(QDialog):
         self.canvas.picked.connect(self.pick);self.canvas.dragged.connect(self.move_layer);self.canvas.zoomed.connect(self.scale_layer)
         self.canvas.finished.connect(self.finish_gesture);self.canvas.copied.connect(self.copy_region)
         self.canvas.created.connect(self.add_cell);self.canvas.geometryChanged.connect(self.change_geometry)
-        self.canvas.nudged.connect(self.nudge)
+        self.canvas.nudged.connect(self.nudge);self.canvas.lineDrawn.connect(self.add_line)
+        line_tools=QHBoxLayout();rl.addLayout(line_tools)
+        for mode,label in [('ink','자유선'),('line','직선')]:
+            button=QPushButton(label);button.setCheckable(True);button.clicked.connect(lambda checked,m=mode:self.set_mode(m));line_tools.addWidget(button);self.mode_buttons[mode]=button
+        line_tools.addWidget(QLabel('선 굵기 px'))
+        self.line_width=QSpinBox();self.line_width.setRange(1,max(1,min(200,round(self.base.width*.2))));self.line_width.setValue(min(4,self.line_width.maximum()));self.line_width.setFixedWidth(64)
+        self.line_width.setToolTip('새로 그릴 선의 굵기 · 크기 변경은 실행 취소에 포함되지 않습니다.')
+        self.line_width.valueChanged.connect(lambda value:setattr(self.canvas,'ink_width',value/self.base.width));self.canvas.ink_width=self.line_width.value()/self.base.width;line_tools.addWidget(self.line_width)
+        remove_line=QPushButton('마지막 선 삭제');remove_line.clicked.connect(self.remove_last_line);line_tools.addWidget(remove_line);line_tools.addStretch()
         self.final_preview.toggled.connect(self.show_final_preview)
         actions=QHBoxLayout();rl.addLayout(actions)
         self.paste_button=QPushButton('선택 부분 붙여넣기 →');self.paste_button.clicked.connect(self.paste)
@@ -277,6 +309,7 @@ class CutEditor(QDialog):
             if embedded:button.setAutoDefault(False);button.setDefault(False)
         self.border.lineEdit().returnPressed.connect(self.canvas.setFocus)
         self.gutter.lineEdit().returnPressed.connect(self.canvas.setFocus)
+        self.line_width.lineEdit().returnPressed.connect(self.canvas.setFocus)
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.setInterval(16);self.timer.timeout.connect(self.refresh)
         self.sources.currentRowChanged.connect(self.load_source);self.source_canvas.selectionChanged.connect(self.source_selected)
         if clipboard:
@@ -344,7 +377,9 @@ class CutEditor(QDialog):
         self.canvas.mode=mode
         self.canvas.setFocus()
         for key,button in self.mode_buttons.items():button.setChecked(key==mode)
-        messages={'draw':'대상 그림에서 드래그하여 원하는 크기의 새 컷을 만드세요.',
+        messages={'ink':'마우스로 문질러 자유롭게 검은 선 그리기 · 휠: 화면 확대 · Ctrl+드래그: 이동',
+                  'line':'드래그 시작점부터 끝점까지 검은 직선 그리기 · 휠: 화면 확대',
+                  'draw':'대상 그림에서 드래그하여 원하는 크기의 새 컷을 만드세요.',
                   'frame':'드래그/방향키: 컷 이동 · Shift+방향키: 10px · 모서리: 크기 조절',
                   'move':'드래그/방향키: 그림 위치 · Shift+방향키: 10px · 휠: 그림 확대/축소',
                   'vertical':'나눌 컷의 원하는 위치를 클릭하면 세로로 나뉩니다.',
@@ -374,6 +409,11 @@ class CutEditor(QDialog):
             self.composition['cells'][index:index+1]=[first,second];self.set_mode('frame');self.refresh()
         elif mode in ('move','frame'):
             self.gesture=copy.deepcopy(self.composition);self.update_image()
+    def add_line(self,line):
+        self.record();self.composition.setdefault('lines',[]).append(copy.deepcopy(line));self.refresh()
+    def remove_last_line(self):
+        if not self.composition.get('lines'):return
+        self.record();self.composition['lines'].pop();self.refresh();self.canvas.setFocus()
     def add_cell(self,rect):
         self.record()
         # Replace the legacy empty full-image placeholder on the first free cut.

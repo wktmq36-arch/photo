@@ -45,6 +45,13 @@ def validate_composition(value,check_images=False):
     for key,data in variants.items():
         if key not in value['assets'] or not isinstance(data,str):raise ValueError('잘못된 원본용 컷 이미지')
         if check_images and decode_asset(data).size!=decode_asset(value['assets'][key]).size:raise ValueError('원본용 컷 이미지 크기 불일치')
+    lines=value.get('lines',[])
+    if not isinstance(lines,list) or len(lines)>10000:raise ValueError('잘못된 검은선 데이터')
+    for line in lines:
+        if not isinstance(line,dict) or not isinstance(line.get('points'),list) or not line['points'] or len(line['points'])>100000:raise ValueError('잘못된 검은선 좌표')
+        if any(not numbers(point,2) or any(v<0 or v>1 for v in point) for point in line['points']):raise ValueError('잘못된 검은선 좌표')
+        width=line.get('width',0)
+        if not isinstance(width,(int,float)) or not math.isfinite(width) or not 0<width<=.2:raise ValueError('잘못된 검은선 굵기')
     for cell in value['cells']:
         if not isinstance(cell,dict):raise ValueError('잘못된 컷 데이터')
         rect=cell.get('rect')
@@ -111,4 +118,10 @@ def render_composition(image,composition,cache=None,include_mosaic=True):
             if x2<1:draw.line((right,top,right,bottom),fill='white',width=gap)
             if y1>0:draw.line((left,top,right,top),fill='white',width=gap)
             if y2<1:draw.line((left,bottom,right,bottom),fill='white',width=gap)
+    draw=ImageDraw.Draw(result)
+    for line in composition.get('lines',[]):
+        points=[(round(x*(width-1)),round(y*(height-1))) for x,y in line['points']]
+        thickness=max(1,round(line['width']*width));radius=(thickness-1)/2
+        if len(points)>1:draw.line(points,fill='black',width=thickness,joint='curve')
+        for x,y in (points[0],points[-1]):draw.ellipse((x-radius,y-radius,x+radius,y+radius),fill='black')
     return result
