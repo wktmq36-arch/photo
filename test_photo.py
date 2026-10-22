@@ -6,6 +6,34 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_rename_project_moves_current_file_and_updates_recent_and_session(self):
+  import json
+  from unittest.mock import patch
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   old=Path(d)/'before.photo.json';new=Path(d)/'after.photo.json'
+   w=Window();w.export_name.setText('separate-export-name');w.write_project(str(old));w.export_name.setText('updated-export-name')
+   with patch('main.QInputDialog.getText',return_value=('after',True)):self.assertTrue(w.rename_project())
+   self.assertFalse(old.exists());self.assertTrue(new.exists());self.assertEqual(w.project,str(new))
+   self.assertNotIn(str(old),w.recent_projects);self.assertEqual(w.recent_projects[0],str(new));self.assertEqual(w.settings.value('session/lastProject'),str(new))
+   self.assertEqual(json.loads(new.read_text(encoding='utf-8'))['export']['name'],'updated-export-name');w.close()
+   reopened=Window();self.assertTrue(reopened.restore_last_project());self.assertEqual(reopened.project,str(new));self.assertEqual(reopened.export_name.text(),'updated-export-name');reopened.close()
+ def test_project_rename_rejects_conflicts_and_allows_naming_unsaved_work(self):
+  from unittest.mock import patch
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   w=Window();source=Path(d)/'source.photo.json';target=Path(d)/'taken.photo.json';target.write_text('keep',encoding='utf-8');w.write_project(str(source))
+   for name in ('taken','../outside','CON','bad/name','trailing.'):
+    with patch('main.QInputDialog.getText',return_value=(name,True)),patch('main.QMessageBox.warning'):
+     self.assertFalse(w.rename_project())
+    self.assertTrue(source.exists());self.assertEqual(w.project,str(source));self.assertEqual(target.read_text(encoding='utf-8'),'keep')
+   self.assertTrue(w.new_project())
+   with patch('main.QInputDialog.getText',return_value=('unsaved-name',True)):self.assertTrue(w.rename_project())
+   self.assertIsNone(w.project);self.assertTrue(w.dirty)
+   saved=str(Path(d)/'unsaved-name.photo.json')
+   with patch('main.QFileDialog.getSaveFileName',return_value=(saved,'')) as picker:
+    self.assertTrue(w.save_project());self.assertEqual(picker.call_args.args[2],'unsaved-name.photo.json')
+   w.close()
  def test_export_folder_name_is_per_project_and_survives_restart(self):
   import json
   from unittest.mock import patch

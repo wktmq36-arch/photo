@@ -410,7 +410,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.51'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.52'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -423,7 +423,7 @@ class Window(QMainWindow):
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.history_labels=[]; self.redo_stack=[]; self.snapshot_cache={};  self.dirty=False; self.project=None
         self.clone_cache_key=None;self.clone_cache_image=None;self.clone_live=None;self.clone_live_entry=None
         self.cut_clipboard=None;self.composition_cache_key=None;self.composition_cache_image=None
-        self.cut_editor=None;self.crop_editor=None;self.navigation_actions=[]
+        self.cut_editor=None;self.crop_editor=None;self.navigation_actions=[];self.pending_project_name='작업'
         self.clone_timer=QTimer(self);self.clone_timer.setSingleShot(True);self.clone_timer.timeout.connect(self.flush_clone_preview)
         self.thumb_cache=OrderedDict();self.thumb_waiters={};self.thumb_cache_bytes=0
         self.pool=QThreadPool(self); self.pool.setMaxThreadCount(4)
@@ -479,6 +479,7 @@ class Window(QMainWindow):
         self.cut_mode_button.clicked.connect(self.toggle_cut_mode);mode_bar.addWidget(self.cut_mode_button)
         self.crop_mode_button=QPushButton('사진 자르기');self.crop_mode_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.crop_mode_button.clicked.connect(self.toggle_crop_mode);mode_bar.addWidget(self.crop_mode_button)
+        rename_button=QPushButton('작업 이름 변경');rename_button.setFocusPolicy(Qt.FocusPolicy.NoFocus);rename_button.clicked.connect(self.rename_project);mode_bar.addWidget(rename_button)
         self.tool_controls=QWidget();mode_bar.addWidget(self.tool_controls,1)
         self.header_grid.addWidget(self.mode_controls,1,0);self.header_grid.addWidget(self.export_controls,1,1)
         self.editor_stack=QStackedWidget();layout.addWidget(self.editor_stack,1)
@@ -1157,6 +1158,28 @@ class Window(QMainWindow):
     def save_project(self):
         if self.project:return self.write_project(self.project)
         return self.save_project_as()
+    def rename_project(self):
+        current=Path(self.project).name.removesuffix('.photo.json') if self.project else self.pending_project_name
+        name,accepted=QInputDialog.getText(self,'작업 이름 변경','새 작업 이름:',text=current)
+        if not accepted:return False
+        name=name.strip()
+        if name.lower().endswith('.photo.json'):name=name[:-11]
+        reserved={'CON','PRN','AUX','NUL'}|{f'{kind}{i}' for kind in ('COM','LPT') for i in range(1,10)}
+        if not name or name.endswith(('.', ' ')) or any(c in '<>:"/\\|?*' or ord(c)<32 for c in name) or name.split('.')[0].upper() in reserved:
+            QMessageBox.warning(self,'이름 변경 실패','파일 이름에 사용할 수 없는 이름입니다.');return False
+        if not self.project:
+            self.pending_project_name=name;self.dirty=True;self.status.setText(f'새 작업 이름: {name} · 처음 저장할 때 위치를 선택하세요.');return True
+        source=Path(self.project);target=source.with_name(name+'.photo.json')
+        if str(source)==str(target):return True
+        try:
+            if target.exists() and not target.samefile(source):raise ValueError('같은 이름의 작업 파일이 이미 있습니다.')
+            if not self.write_project(str(source)):return False
+            source.rename(target)
+            self.project=str(target.resolve());self.recent_projects=[p for p in self.recent_projects if p!=str(source)]
+            self.remember_project(self.project);self.settings.setValue('session/lastProject',self.project);self.settings.sync()
+            self.status.setText(f'작업 이름 변경 완료: {name}');return True
+        except Exception as exc:
+            QMessageBox.warning(self,'이름 변경 실패',str(exc));return False
     def mark_export_name_changed(self):
         self.dirty=True
     def new_project(self):
@@ -1170,6 +1193,7 @@ class Window(QMainWindow):
         self.populate([]);self.history=[];self.history_labels=[];self.redo_stack=[];self.snapshot_cache={}
         self.project=None;self.dirty=False;self.update_history_controls();self.refresh_recent_projects()
         self.export_name.setText('a')
+        self.pending_project_name='작업'
         self.settings.setValue('session/lastProject','');self.settings.remove('session/lastView');self.settings.sync()
         self.status.setText('새 작업 · 그림을 추가하세요.');return True
     def restore_last_project(self):
@@ -1196,7 +1220,7 @@ class Window(QMainWindow):
         self.list.doItemsLayout()
         if isinstance(view.get('scroll'),int):self.list.verticalScrollBar().setValue(view['scroll'])
     def save_project_as(self):
-        path,_=QFileDialog.getSaveFileName(self,'다른 이름으로 작업 저장',self.project or '작업.photo.json','Photo project (*.photo.json)')
+        path,_=QFileDialog.getSaveFileName(self,'다른 이름으로 작업 저장',self.project or self.pending_project_name+'.photo.json','Photo project (*.photo.json)')
         if path and not path.lower().endswith('.photo.json'):path+='.photo.json'
         return self.write_project(path)
     def write_project(self,path):
