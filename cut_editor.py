@@ -3,174 +3,395 @@ from pathlib import Path
 from PySide6.QtCore import Qt,QRectF,QPointF,QSize,Signal,QTimer
 from PySide6.QtGui import QPainter,QColor,QPen,QImage,QPixmap,QKeySequence,QShortcut
 from PySide6.QtWidgets import (QDialog,QWidget,QVBoxLayout,QHBoxLayout,QPushButton,QLabel,
-    QListWidget,QListWidgetItem,QSplitter,QDialogButtonBox,QMessageBox,QSpinBox)
-from composition import empty_composition,pixel_asset,render_composition
+    QListWidget,QListWidgetItem,QSplitter,QDialogButtonBox,QMessageBox,QSpinBox,QLineEdit,
+    QAbstractItemView,QMenu)
+from composition import empty_composition,pixel_asset,decode_asset,render_composition
 from imaging import read_pixels,render_entry,render_clones,render_regions
 
 
-class PanelCanvas(QWidget):
-    picked=Signal(object)
-    dragged=Signal(object)
-    zoomed=Signal(object)
-    copied=Signal(object)
-    finished=Signal()
+def pixmap_for(image):
+    rgba=image.convert('RGBA')
+    return QPixmap.fromImage(QImage(rgba.tobytes(),rgba.width,rgba.height,rgba.width*4,QImage.Format.Format_RGBA8888).copy())
+
+
+class ImageCanvas(QWidget):
+    """Shared image coordinates, corner handles, and cursor-anchored view zoom."""
     def __init__(self):
-        super().__init__();self.setMinimumSize(360,300);self.pixmap=None;self.cells=[];self.active=0
-        self.target=QRectF();self.mode='move';self.start=None;self.end=None;self.setMouseTracking(True)
-    def point(self,pos):
-        return [max(0.,min(1.,(pos.x()-self.target.x())/max(1,self.target.width()))),max(0.,min(1.,(pos.y()-self.target.y())/max(1,self.target.height())))]
-    def paintEvent(self,event):
-        painter=QPainter(self);painter.fillRect(self.rect(),QColor('#171b22'))
+        super().__init__();self.setMinimumSize(220,220);self.setMouseTracking(True)
+        self.pixmap=None;self.target=QRectF();self.view_zoom=1.;self.pan=QPointF();self.pan_start=None
+        self.start=None;self.end=None;self.original_rect=None;self.handle=None
+    def set_image(self,image,reset=False):
+        self.pixmap=pixmap_for(image) if image is not None else None
+        if reset:self.reset_view()
+        self.update_target();self.update()
+    def reset_view(self):
+        self.view_zoom=1.;self.pan=QPointF();self.update_target();self.update()
+    def update_target(self):
         if not self.pixmap:return
-        size=self.pixmap.size();ratio=min(self.width()/size.width(),self.height()/size.height())
-        w,h=size.width()*ratio,size.height()*ratio;self.target=QRectF((self.width()-w)/2,(self.height()-h)/2,w,h)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        painter.drawPixmap(self.target,self.pixmap,QRectF(self.pixmap.rect()))
+        size=self.pixmap.size();ratio=min(self.width()/size.width(),self.height()/size.height())*self.view_zoom
+        w,h=size.width()*ratio,size.height()*ratio
+        self.target=QRectF((self.width()-w)/2+self.pan.x(),(self.height()-h)/2+self.pan.y(),w,h)
+    def point(self,pos):
+        return [max(0.,min(1.,(pos.x()-self.target.x())/max(1,self.target.width()))),
+                max(0.,min(1.,(pos.y()-self.target.y())/max(1,self.target.height())))]
+    def image_rect(self,rect):
+        x1,y1,x2,y2=rect
+        return QRectF(self.target.x()+x1*self.target.width(),self.target.y()+y1*self.target.height(),
+                      (x2-x1)*self.target.width(),(y2-y1)*self.target.height())
+    def handles(self,rect):
+        r=self.image_rect(rect);x,y,cx,cy,right,bottom=r.left(),r.top(),r.center().x(),r.center().y(),r.right(),r.bottom()
+        return {'nw':QPointF(x,y),'n':QPointF(cx,y),'ne':QPointF(right,y),'e':QPointF(right,cy),
+                'se':QPointF(right,bottom),'s':QPointF(cx,bottom),'sw':QPointF(x,bottom),'w':QPointF(x,cy)}
+    def handle_at(self,rect,pos):
+        return next((key for key,point in self.handles(rect).items() if abs(point.x()-pos.x())<=8 and abs(point.y()-pos.y())<=8),None)
+    def draw_handles(self,painter,rect):
+        painter.setPen(QPen(QColor('#202630'),1));painter.setBrush(QColor('white'))
+        for point in self.handles(rect).values():painter.drawRect(QRectF(point.x()-4,point.y()-4,8,8))
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        for index,cell in enumerate(self.cells):
-            x1,y1,x2,y2=cell['rect'];rect=QRectF(self.target.x()+x1*w,self.target.y()+y1*h,(x2-x1)*w,(y2-y1)*h)
-            painter.setPen(QPen(QColor('#ffb347' if index==self.active else '#65baff'),3 if index==self.active else 1))
-            painter.drawRect(rect);painter.drawText(rect.adjusted(6,5,-4,-4),Qt.AlignmentFlag.AlignTop|Qt.AlignmentFlag.AlignLeft,str(index+1))
-        if self.mode=='copy' and self.start is not None and self.end is not None:
-            painter.setPen(QPen(QColor('white'),2,Qt.PenStyle.DashLine));painter.drawRect(QRectF(self.start,self.end).normalized())
+    def moved_rect(self,rect,delta):
+        dx=max(-rect[0],min(1-rect[2],delta[0]));dy=max(-rect[1],min(1-rect[3],delta[1]))
+        return [rect[0]+dx,rect[1]+dy,rect[2]+dx,rect[3]+dy]
+    def resized_rect(self,rect,point,handle):
+        result=rect[:];minimum_x=min(.01,6/max(1,self.target.width()));minimum_y=min(.01,6/max(1,self.target.height()))
+        if 'w' in handle:result[0]=max(0.,min(rect[2]-minimum_x,point[0]))
+        if 'e' in handle:result[2]=min(1.,max(rect[0]+minimum_x,point[0]))
+        if 'n' in handle:result[1]=max(0.,min(rect[3]-minimum_y,point[1]))
+        if 's' in handle:result[3]=min(1.,max(rect[1]+minimum_y,point[1]))
+        return result
+    def rectangle(self,start,end):
+        a=self.point(start);b=self.point(end)
+        return [min(a[0],b[0]),min(a[1],b[1]),max(a[0],b[0]),max(a[1],b[1])]
+    def valid_drag(self,rect):return (rect[2]-rect[0])*self.target.width()>4 and (rect[3]-rect[1])*self.target.height()>4
+    def begin_pan(self,event):
+        if self.pixmap and (event.button()==Qt.MouseButton.MiddleButton or
+            (event.button()==Qt.MouseButton.LeftButton and event.modifiers() & Qt.KeyboardModifier.ControlModifier)):
+            self.pan_start=event.position();self.setCursor(Qt.CursorShape.ClosedHandCursor);event.accept();return True
+        return False
+    def continue_pan(self,event):
+        if self.pan_start is None:return False
+        self.pan+=event.position()-self.pan_start;self.pan_start=event.position();self.update_target();self.update();return True
+    def end_pan(self,event):
+        if self.pan_start is None:return False
+        self.pan_start=None;self.unsetCursor();return True
+    def zoom_view(self,event):
+        if not self.pixmap:return
+        self.update_target();point=event.position()
+        u=(point.x()-self.target.x())/self.target.width();v=(point.y()-self.target.y())/self.target.height()
+        self.view_zoom=max(.25,min(16.,self.view_zoom*1.2**(event.angleDelta().y()/120)));self.update_target()
+        self.pan+=QPointF(point.x()-(self.target.x()+u*self.target.width()),point.y()-(self.target.y()+v*self.target.height()))
+        self.update_target();self.update();event.accept()
+    def paint_image(self,painter):
+        painter.fillRect(self.rect(),QColor('#171b22'));self.update_target()
+        if self.pixmap:
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            painter.drawPixmap(self.target,self.pixmap,QRectF(self.pixmap.rect()))
+
+
+class SourceCanvas(ImageCanvas):
+    selectionChanged=Signal(object)
+    def __init__(self):
+        super().__init__();self.selection=None;self.action=None
+    def clear_selection(self):
+        self.selection=None;self.selectionChanged.emit(None);self.update()
+    def paintEvent(self,event):
+        painter=QPainter(self);self.paint_image(painter)
+        if not self.pixmap:return
+        rect=self.selection
+        if self.action=='draw' and self.start is not None:rect=self.rectangle(self.start,self.end)
+        if rect:
+            selected=self.image_rect(rect);t=self.target
+            painter.save();painter.setClipRect(t);shade=QColor(0,0,0,125)
+            for area in [QRectF(t.left(),t.top(),t.width(),selected.top()-t.top()),QRectF(t.left(),selected.bottom(),t.width(),t.bottom()-selected.bottom()),
+                         QRectF(t.left(),selected.top(),selected.left()-t.left(),selected.height()),QRectF(selected.right(),selected.top(),t.right()-selected.right(),selected.height())]:
+                painter.fillRect(area,shade)
+            painter.restore();painter.setBrush(Qt.BrushStyle.NoBrush);painter.setPen(QPen(QColor('#ffb347'),2));painter.drawRect(selected)
+            self.draw_handles(painter,rect)
     def mousePressEvent(self,event):
-        if event.button()!=Qt.MouseButton.LeftButton or not self.target.contains(event.position()):return
-        self.start=event.position();self.end=self.start;point=self.point(self.start)
-        index=next((i for i,c in enumerate(self.cells) if c['rect'][0]<=point[0]<=c['rect'][2] and c['rect'][1]<=point[1]<=c['rect'][3]),-1)
-        if index>=0:self.active=index;self.picked.emit((index,point,self.mode))
+        if self.begin_pan(event):return
+        if event.button()!=Qt.MouseButton.LeftButton or not self.pixmap:return
+        self.update_target();self.handle=self.handle_at(self.selection,event.position()) if self.selection else None
+        if not self.handle and not self.target.contains(event.position()):return
+        self.start=event.position();self.end=self.start;self.original_rect=self.selection[:] if self.selection else None
+        if self.handle:self.action='resize'
+        elif self.selection and self.image_rect(self.selection).contains(event.position()) and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:self.action='move'
+        else:self.action='draw'
         self.update()
     def mouseMoveEvent(self,event):
+        if self.continue_pan(event):return
         if self.start is None:return
-        if self.mode=='move':
-            previous=self.point(self.end);current=self.point(event.position())
-            self.dragged.emit([current[0]-previous[0],current[1]-previous[1]])
-        self.end=event.position();self.update()
+        self.end=event.position()
+        if self.action=='resize':self.selection=self.resized_rect(self.original_rect,self.point(self.end),self.handle)
+        elif self.action=='move':
+            a,b=self.point(self.start),self.point(self.end);self.selection=self.moved_rect(self.original_rect,[b[0]-a[0],b[1]-a[1]])
+        self.update()
     def mouseReleaseEvent(self,event):
+        if self.end_pan(event):return
         if self.start is None:return
-        if self.mode=='copy':
-            a=self.point(self.start);b=self.point(event.position())
-            if abs(a[0]-b[0])*self.target.width()>3 and abs(a[1]-b[1])*self.target.height()>3:
-                self.copied.emit([min(a[0],b[0]),min(a[1],b[1]),max(a[0],b[0]),max(a[1],b[1])])
-        self.start=None;self.end=None;self.finished.emit();self.update()
+        if self.action=='draw':
+            rect=self.rectangle(self.start,event.position())
+            self.selection=rect if self.valid_drag(rect) else None
+        self.start=None;self.end=None;self.action=None;self.selectionChanged.emit(self.selection);self.update()
+    def wheelEvent(self,event):self.zoom_view(event)
+
+
+class PanelCanvas(ImageCanvas):
+    picked=Signal(object);dragged=Signal(object);zoomed=Signal(object);copied=Signal(object);finished=Signal()
+    created=Signal(object);geometryChanged=Signal(object)
+    def __init__(self):
+        super().__init__();self.cells=[];self.active=0;self.mode='frame';self.action=None
+    def paintEvent(self,event):
+        painter=QPainter(self);self.paint_image(painter)
+        if not self.pixmap:return
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for index,cell in enumerate(self.cells):
+            rect=self.image_rect(cell['rect']);painter.setPen(QPen(QColor('#ffb347' if index==self.active else '#65baff'),2 if index==self.active else 1))
+            painter.drawRect(rect);painter.drawText(rect.adjusted(7,6,-4,-4),Qt.AlignmentFlag.AlignTop|Qt.AlignmentFlag.AlignLeft,str(index+1))
+        if self.mode in ('draw','copy') and self.start is not None and self.end is not None:
+            painter.setPen(QPen(QColor('white'),2,Qt.PenStyle.DashLine));painter.drawRect(self.image_rect(self.rectangle(self.start,self.end)))
+        elif 0<=self.active<len(self.cells):self.draw_handles(painter,self.cells[self.active]['rect'])
+    def mousePressEvent(self,event):
+        if self.begin_pan(event):return
+        if event.button()!=Qt.MouseButton.LeftButton or not self.pixmap:return
+        self.update_target();pos=event.position();self.handle=None
+        if self.mode not in ('draw','copy','vertical','horizontal') and 0<=self.active<len(self.cells):self.handle=self.handle_at(self.cells[self.active]['rect'],pos)
+        if not self.handle and not self.target.contains(pos):return
+        self.start=pos;self.end=pos
+        if self.mode in ('draw','copy'):self.action=self.mode;self.update();return
+        point=self.point(pos)
+        index=self.active if self.handle else next((i for i in reversed(range(len(self.cells))) if self.image_rect(self.cells[i]['rect']).contains(pos)),-1)
+        if index<0:self.start=None;return
+        self.active=index;self.original_rect=self.cells[index]['rect'][:]
+        self.action='resize' if self.handle else ('frame' if self.mode=='frame' else 'image')
+        self.picked.emit((index,point,self.mode));self.update()
+    def mouseMoveEvent(self,event):
+        if self.continue_pan(event):return
+        if self.start is None:return
+        pos=event.position()
+        if self.action=='resize':self.geometryChanged.emit((self.active,self.resized_rect(self.original_rect,self.point(pos),self.handle)))
+        elif self.action=='frame':
+            a,b=self.point(self.start),self.point(pos)
+            self.geometryChanged.emit((self.active,self.moved_rect(self.original_rect,[b[0]-a[0],b[1]-a[1]])))
+        elif self.action=='image':
+            a,b=self.point(self.end),self.point(pos);self.dragged.emit([b[0]-a[0],b[1]-a[1]])
+        self.end=pos;self.update()
+    def mouseReleaseEvent(self,event):
+        if self.end_pan(event):return
+        if self.start is None:return
+        if self.action in ('draw','copy'):
+            rect=self.rectangle(self.start,event.position())
+            if self.valid_drag(rect):
+                if self.action=='draw':self.created.emit(rect)
+                else:self.copied.emit(rect)
+        self.start=None;self.end=None;self.action=None;self.finished.emit();self.update()
     def wheelEvent(self,event):
-        if self.target.contains(event.position()) and self.mode=='move':
-            self.zoomed.emit(event.angleDelta().y()/120);event.accept()
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:self.zoom_view(event)
+        elif self.target.contains(event.position()) and 0<=self.active<len(self.cells):self.zoomed.emit(event.angleDelta().y()/120);event.accept()
         else:event.ignore()
 
 
 class CutEditor(QDialog):
     def __init__(self,entry,entries,icons,clipboard=None,parent=None):
-        super().__init__(parent);self.setWindowTitle('컷 편집 · 분할하고 그림 붙여넣기');self.resize(1250,850)
-        self.entry=entry;self.entries=entries;self.clipboard=clipboard
+        super().__init__(parent);self.setWindowTitle('컷 편집 · 왼쪽에서 선택하고 오른쪽에 붙여넣기')
+        available=self.screen().availableGeometry();self.resize(min(1420,available.width()-40),min(900,available.height()-60))
+        self.entry=entry;self.entries=entries;self.clipboard=clipboard;self.source_image=None;self.source_dirty=False
         self.composition=copy.deepcopy(entry.get('composition') or empty_composition())
-        self.history=[];self.redo_history=[];self.gesture=None;self.assets_cache={};self.changed=False
+        self.history=[];self.redo_history=[];self.gesture=None;self.assets_cache={}
         self.base=read_pixels(entry['path']);self.preview=self.base.copy();self.preview.thumbnail((1600,1600))
-        root=QVBoxLayout(self);toolbar=QHBoxLayout();root.addLayout(toolbar)
-        self.mode_buttons={}
-        for name,label in [('move','배치 / 이동'),('vertical','세로 분할선'),('horizontal','가로 분할선'),('copy','영역 복사')]:
-            button=QPushButton(label);button.setCheckable(True);button.clicked.connect(lambda checked,n=name:self.set_mode(n));toolbar.addWidget(button);self.mode_buttons[name]=button
-        for label,fn in [('실행 취소',self.undo),('다시 실행',self.redo),('컷 배치 초기화',self.reset)]:
-            button=QPushButton(label);button.clicked.connect(fn);toolbar.addWidget(button)
-        split=QSplitter();root.addWidget(split,1)
-        left=QWidget();ll=QVBoxLayout(left);ll.addWidget(QLabel('복사할 그림 선택 (현재 모자이크 포함)'))
-        self.sources=QListWidget();self.sources.setIconSize(QSize(90,70));ll.addWidget(self.sources)
-        for index,source in enumerate(entries):
-            item=QListWidgetItem(icons[index],f'{index+1:03d}  {Path(source["path"]).name}');self.sources.addItem(item)
-        copy_button=QPushButton('선택 그림 전체 복사');copy_button.clicked.connect(self.copy_source);ll.addWidget(copy_button)
-        self.sources.itemDoubleClicked.connect(lambda item:self.copy_source())
-        split.addWidget(left);self.canvas=PanelCanvas();split.addWidget(self.canvas);split.setSizes([270,900])
+        root=QVBoxLayout(self);intro=QLabel('① 가져올 그림에서 필요한 부분 드래그   →   ② 대상에 컷 그리기   →   ③ 붙여넣기')
+        intro.setStyleSheet('font-size:14px;font-weight:bold;padding:4px;');root.addWidget(intro)
+        split=QSplitter();split.setHandleWidth(5);root.addWidget(split,1)
+        left=QWidget();ll=QVBoxLayout(left);ll.setContentsMargins(0,0,3,0)
+        self.search=QLineEdit();self.search.setPlaceholderText('가져올 그림 찾기 · 번호 또는 파일명');self.search.textChanged.connect(self.filter_sources);ll.addWidget(self.search)
+        self.sources=QListWidget();self.sources.setViewMode(QListWidget.ViewMode.IconMode);self.sources.setMovement(QListWidget.Movement.Static)
+        self.sources.setIconSize(QSize(72,55));self.sources.setGridSize(QSize(110,86));self.sources.setFlow(QListWidget.Flow.LeftToRight);self.sources.setWrapping(False)
+        self.sources.setFixedHeight(110);ll.addWidget(self.sources)
+        for index,source in enumerate(entries):self.sources.addItem(QListWidgetItem(icons[index],f'{index+1:03d}  {Path(source["path"]).name}'))
+        self.source_title=QLabel('');self.source_title.setWordWrap(True);ll.addWidget(self.source_title)
+        self.source_canvas=SourceCanvas();ll.addWidget(self.source_canvas,1)
+        source_controls=QHBoxLayout();ll.addLayout(source_controls)
+        for label,fn in [('전체 선택',self.select_whole_source),('화면 맞춤',self.source_canvas.reset_view)]:
+            button=QPushButton(label);button.clicked.connect(fn);source_controls.addWidget(button)
+        self.source_info=QLabel('드래그: 영역 선택 · 모서리: 범위 조절 · 휠: 확대');self.source_info.setWordWrap(True);ll.addWidget(self.source_info)
+        split.addWidget(left)
+        right=QWidget();rl=QVBoxLayout(right);rl.setContentsMargins(3,0,0,0)
+        title=QLabel(f'대상: {Path(entry["path"]).name}  ·  출력 {self.base.width} × {self.base.height}px');title.setWordWrap(True);rl.addWidget(title)
+        toolbar=QHBoxLayout();rl.addLayout(toolbar);self.mode_buttons={}
+        for mode,label in [('draw','＋ 컷 그리기'),('frame','컷 이동'),('move','그림 위치')]:
+            button=QPushButton(label);button.setCheckable(True);button.clicked.connect(lambda checked,m=mode:self.set_mode(m));toolbar.addWidget(button);self.mode_buttons[mode]=button
+        more_button=QPushButton('더 보기');menu=QMenu(more_button)
+        for label,fn in [('세로 분할선',lambda:self.set_mode('vertical')),('가로 분할선',lambda:self.set_mode('horizontal')),
+                         ('붙인 그림 비우기',self.remove_layer),('선택 컷 삭제',self.delete_cell),('선택 컷 앞으로',self.raise_cell),('컷 배치 초기화',self.reset),('화면 맞춤',lambda:self.canvas.reset_view())]:
+            menu.addAction(label,fn)
+        more_button.setMenu(menu);toolbar.addWidget(more_button)
+        self.canvas=PanelCanvas();rl.addWidget(self.canvas,1)
         self.canvas.picked.connect(self.pick);self.canvas.dragged.connect(self.move_layer);self.canvas.zoomed.connect(self.scale_layer)
         self.canvas.finished.connect(self.finish_gesture);self.canvas.copied.connect(self.copy_region)
-        controls=QHBoxLayout();root.addLayout(controls)
-        for label,fn in [('선택 컷에 붙여넣기',self.paste),('축소 −',lambda:self.scale_layer(-1)),('확대 +',lambda:self.scale_layer(1)),('컷에 꽉 맞춤',lambda:self.fit(True)),('그림 전체 맞춤',lambda:self.fit(False)),('붙인 그림 제거',self.remove_layer)]:
-            button=QPushButton(label);button.clicked.connect(fn);controls.addWidget(button)
-        self.info=QLabel();root.addWidget(self.info)
-        gap_controls=QHBoxLayout();root.addLayout(gap_controls);gap_controls.addWidget(QLabel('컷 사이 흰 간격 (출력 픽셀)'))
-        self.gutter=QSpinBox();self.gutter.setRange(0,min(200,self.base.width//10));self.gutter.setValue(round(self.composition.get('gutter',0.)*self.base.width))
-        self.gutter.valueChanged.connect(self.change_gutter);gap_controls.addWidget(self.gutter);gap_controls.addStretch()
-        self.help=QLabel('분할 도구 선택 → 그림을 클릭해 컷 나누기 · 컷 선택 → 붙여넣기 · 드래그: 그림 이동 / 휠: 붙인 그림 크기');root.addWidget(self.help)
+        self.canvas.created.connect(self.add_cell);self.canvas.geometryChanged.connect(self.change_geometry)
+        actions=QHBoxLayout();rl.addLayout(actions)
+        self.paste_button=QPushButton('선택 부분 붙여넣기 →');self.paste_button.clicked.connect(self.paste)
+        self.paste_button.setStyleSheet('background:#287fce;color:white;font-weight:bold;padding:9px;');actions.addWidget(self.paste_button)
+        fill=QPushButton('원래 해상도로 채우기');fill.setToolTip('출력 크기는 원래대로 유지합니다. 선택 부분을 비율 유지 확대하고 넘친 부분은 자릅니다. 전체를 보려면 그림 전체 보이게를 누르세요.');fill.clicked.connect(self.fill_original_resolution);actions.addWidget(fill)
+        fit_controls=QHBoxLayout();rl.addLayout(fit_controls)
+        for label,fn in [('그림 전체 보이게',lambda:self.fit(False)),('컷에 꽉 채우기',lambda:self.fit(True)),('-',lambda:self.scale_layer(-1)),('+',lambda:self.scale_layer(1))]:
+            button=QPushButton(label);button.clicked.connect(fn);fit_controls.addWidget(button)
+        self.scale_label=QLabel('');fit_controls.addWidget(self.scale_label)
+        self.help=QLabel('드래그로 새 컷 · 모서리로 크기 조절 · 그림 위치에서 드래그/휠로 내용 조절');self.help.setWordWrap(True);rl.addWidget(self.help)
+        split.addWidget(right);split.setSizes([560,820]);split.setChildrenCollapsible(False)
+        bottom=QHBoxLayout();root.addLayout(bottom)
+        for label,fn in [('실행 취소',self.undo),('다시 실행',self.redo)]:
+            button=QPushButton(label);button.clicked.connect(fn);bottom.addWidget(button)
+        bottom.addWidget(QLabel('흰 간격 / 테두리 px'))
+        self.gutter=QSpinBox();self.gutter.setRange(0,min(200,self.base.width//10));self.gutter.valueChanged.connect(self.change_gutter);bottom.addWidget(self.gutter)
+        self.info=QLabel();bottom.addWidget(self.info,1)
         buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText('적용');buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('취소')
-        buttons.accepted.connect(self.apply);buttons.rejected.connect(self.reject);root.addWidget(buttons)
+        buttons.accepted.connect(self.apply);buttons.rejected.connect(self.reject);bottom.addWidget(buttons)
         self.shortcuts=[]
-        for sequence,fn in [('Ctrl+C',self.copy_source),('Ctrl+V',self.paste),('Ctrl+Z',self.undo),('Ctrl+Y',self.redo),('Ctrl+Shift+Z',self.redo)]:
+        for sequence,fn in [('Ctrl+C',self.copy_selection),('Ctrl+V',self.paste),('Ctrl+Z',self.undo),('Ctrl+Y',self.redo),('Ctrl+Shift+Z',self.redo)]:
             shortcut=QShortcut(QKeySequence(sequence),self);shortcut.activated.connect(fn);self.shortcuts.append(shortcut)
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.setInterval(16);self.timer.timeout.connect(self.refresh)
-        self.set_mode('move');self.refresh()
+        self.sources.currentRowChanged.connect(self.load_source);self.source_canvas.selectionChanged.connect(self.source_selected)
+        if clipboard:
+            self.source_image=decode_asset(clipboard[1]);self.source_canvas.set_image(self.preview_source(),True);self.source_title.setText('복사해 둔 그림 · 드래그해서 필요한 부분 선택')
+        elif entries:self.sources.setCurrentRow(next((i for i,e in enumerate(entries) if e['id']==entry['id']),0))
+        self.set_mode('frame' if entry.get('composition') else 'draw');self.refresh()
+    def filter_sources(self,text):
+        for row in range(self.sources.count()):self.sources.item(row).setHidden(text.casefold() not in self.sources.item(row).text().casefold())
+    def preview_source(self):
+        image=self.source_image.copy();image.thumbnail((1800,1800));return image
+    def load_source(self,row):
+        if row<0:return
+        try:
+            source=self.entries[row]
+            if source['id']==self.entry['id']:source=dict(source,composition=self.composition)
+            self.source_image=render_entry(read_pixels(source['path']),source)
+            self.source_canvas.selection=None;self.source_canvas.set_image(self.preview_source(),True)
+            self.source_title.setText(Path(source['path']).name);self.source_selected(None)
+        except Exception as exc:
+            self.source_image=None;self.source_canvas.set_image(None);self.source_title.setText(f'읽기 실패: {exc}')
+            self.clipboard=None;self.source_dirty=False
+    def source_selected(self,rect):
+        self.source_dirty=True
+        if self.source_image is None:return
+        box=self.source_box();width,height=box[2]-box[0],box[3]-box[1]
+        self.source_info.setText(f'선택 {width} × {height}px · 모서리: 범위 조절 · 안쪽: 이동 · Shift+드래그: 새 선택 · 휠: 화면 확대')
+    def source_box(self):
+        w,h=self.source_image.size;rect=self.source_canvas.selection or [0.,0.,1.,1.]
+        x1,y1,x2,y2=rect
+        left,top=min(w-1,round(x1*w)),min(h-1,round(y1*h))
+        return (left,top,max(left+1,min(w,round(x2*w))),max(top+1,min(h,round(y2*h))))
+    def select_whole_source(self):self.source_canvas.clear_selection()
+    def copy_selection(self):
+        if self.source_image is None:return
+        if self.source_dirty or self.clipboard is None:
+            self.clipboard=pixel_asset(self.source_image.crop(self.source_box()));self.source_dirty=False
+        self.info.setText('선택 부분 복사 완료 · 대상에 붙여넣으세요.')
+    def copy_source(self):
+        self.select_whole_source();self.copy_selection()
     def set_mode(self,mode):
         self.canvas.mode=mode
         for key,button in self.mode_buttons.items():button.setChecked(key==mode)
+        messages={'draw':'대상 그림에서 드래그하여 원하는 크기의 새 컷을 만드세요.',
+                  'frame':'컷 안쪽 드래그: 컷 이동 · 흰 모서리/변: 컷 크기 조절',
+                  'move':'컷 안쪽 드래그: 그림 위치 · 휠: 그림 확대/축소 · 흰 모서리: 컷 크기',
+                  'vertical':'나눌 컷의 원하는 위치를 클릭하면 세로로 나뉩니다.',
+                  'horizontal':'나눌 컷의 원하는 위치를 클릭하면 가로로 나뉩니다.'}
+        self.help.setText(messages.get(mode,''))
     def record(self):
-        self.history.append(copy.deepcopy(self.composition));self.history=self.history[-200:];self.redo_history.clear()
+        self.finish_gesture();self.history.append(copy.deepcopy(self.composition));self.history=self.history[-200:];self.redo_history.clear()
     def update_image(self):
         if not self.timer.isActive():self.timer.start()
     def refresh(self):
-        self.timer.stop()
-        image=render_composition(self.preview,self.composition,self.assets_cache)
+        self.timer.stop();image=render_composition(self.preview,self.composition,self.assets_cache)
         image=render_clones(image,self.entry.get('clones',[]));image=render_regions(image,self.entry['regions'])
-        rgba=image.convert('RGBA');qimage=QImage(rgba.tobytes(),rgba.width,rgba.height,rgba.width*4,QImage.Format.Format_RGBA8888).copy()
-        self.canvas.pixmap=QPixmap.fromImage(qimage);self.canvas.cells=self.composition['cells']
-        self.canvas.active=min(self.canvas.active,len(self.canvas.cells)-1);self.canvas.update()
+        self.canvas.set_image(image);self.canvas.cells=self.composition['cells']
+        self.canvas.active=min(self.canvas.active,len(self.canvas.cells)-1)
         self.gutter.blockSignals(True);self.gutter.setValue(round(self.composition.get('gutter',0.)*self.base.width));self.gutter.blockSignals(False)
-        self.info.setText(f'컷 {len(self.canvas.cells)}개 · 선택 {self.canvas.active+1}번 · '+('복사한 그림 있음' if self.clipboard else '그림을 복사한 뒤 붙여넣으세요'))
+        self.info.setText(f'컷 {len(self.canvas.cells)}개 · 선택 {self.canvas.active+1}번' if self.canvas.active>=0 else '컷을 그리거나 원래 해상도로 채우세요.')
+        cell=self.cell();self.scale_label.setText(f'{cell.get("scale",1.)*100:.0f}%' if cell and 'asset' in cell else '')
     def pick(self,event):
-        index,point,mode=event;self.finish_gesture()
+        index,point,mode=event;self.finish_gesture();self.canvas.active=index
         if mode in ('vertical','horizontal'):
-            cell=self.composition['cells'][index];rect=cell['rect'];axis=0 if mode=='vertical' else 1
-            value=point[axis];lo,hi=rect[axis],rect[axis+2]
-            if not lo+.02<value<hi-.02:return
+            cell=self.cell();rect=cell['rect'];axis=0 if mode=='vertical' else 1;value=point[axis]
+            if not rect[axis]+.01<value<rect[axis+2]-.01:return
             self.record();first=copy.deepcopy(cell);second=copy.deepcopy(cell)
             first['rect'][axis+2]=value;second['rect'][axis]=value
-            self.composition['cells'][index:index+1]=[first,second];self.set_mode('move');self.refresh()
-        elif mode=='move':self.gesture=copy.deepcopy(self.composition);self.update_image()
+            self.composition['cells'][index:index+1]=[first,second];self.set_mode('frame');self.refresh()
+        elif mode in ('move','frame'):
+            self.gesture=copy.deepcopy(self.composition);self.update_image()
+    def add_cell(self,rect):
+        self.record()
+        # Replace the legacy empty full-image placeholder on the first free cut.
+        if self.composition['cells']==[{'rect':[0.,0.,1.,1.]}]:self.composition['cells']=[]
+        self.composition['freeform']=True;self.composition['cells'].append({'rect':rect[:]})
+        self.canvas.active=len(self.composition['cells'])-1;self.set_mode('frame');self.refresh()
+    def change_geometry(self,event):
+        index,rect=event
+        if 0<=index<len(self.composition['cells']):
+            self.composition['cells'][index]['rect']=rect;self.composition['freeform']=True;self.update_image()
     def change_gutter(self,value):
+        if value==round(self.composition.get('gutter',0.)*self.base.width):return
         self.record();self.composition['gutter']=value/self.base.width;self.refresh()
     def finish_gesture(self):
         if self.gesture is not None and self.gesture!=self.composition:
             self.history.append(self.gesture);self.history=self.history[-200:];self.redo_history.clear()
         self.gesture=None
-    def cell(self):return self.composition['cells'][self.canvas.active]
-    def copy_source(self):
-        row=self.sources.currentRow()
-        if row<0:return
-        try:
-            source=self.entries[row];image=render_entry(read_pixels(source['path']),source)
-            self.clipboard=pixel_asset(image);self.set_mode('move');self.refresh()
-        except Exception as exc:QMessageBox.warning(self,'복사 실패',str(exc))
+    def cell(self):
+        return self.composition['cells'][self.canvas.active] if 0<=self.canvas.active<len(self.composition['cells']) else None
     def copy_region(self,rect):
-        try:
-            draft=dict(self.entry,composition=self.composition);image=render_entry(self.base,draft)
-            box=(round(rect[0]*image.width),round(rect[1]*image.height),round(rect[2]*image.width),round(rect[3]*image.height))
-            if box[2]>box[0] and box[3]>box[1]:self.clipboard=pixel_asset(image.crop(box))
-            self.set_mode('move');self.refresh()
-        except Exception as exc:QMessageBox.warning(self,'복사 실패',str(exc))
+        image=render_entry(self.base,dict(self.entry,composition=self.composition))
+        box=(round(rect[0]*image.width),round(rect[1]*image.height),round(rect[2]*image.width),round(rect[3]*image.height))
+        if box[2]>box[0] and box[3]>box[1]:
+            self.clipboard=pixel_asset(image.crop(box));self.source_image=decode_asset(self.clipboard[1]);self.source_canvas.selection=None
+            self.source_canvas.set_image(self.preview_source(),True);self.source_dirty=False
+        self.set_mode('move');self.refresh()
     def paste(self):
-        if not self.clipboard:self.info.setText('먼저 왼쪽 그림을 선택하고 복사하세요.');return
+        self.copy_selection()
+        if not self.clipboard:self.info.setText('먼저 왼쪽에서 가져올 그림을 선택하세요.');return
+        self.record()
+        if self.cell() is None:
+            self.composition['cells'].append({'rect':[.1,.1,.9,.9]});self.canvas.active=len(self.composition['cells'])-1;self.composition['freeform']=True
+        key,data=self.clipboard;self.composition['assets'][key]=data;self.cell().update(asset=key,scale=1.,offset=[0.,0.])
+        self.set_mode('move');self.refresh()
+    def fill_original_resolution(self):
+        self.copy_selection()
+        if not self.clipboard:self.info.setText('먼저 왼쪽에서 필요한 부분을 선택하세요.');return
         self.record();key,data=self.clipboard;self.composition['assets'][key]=data
-        self.cell().update(asset=key,scale=1.,offset=[0.,0.]);self.set_mode('move');self.refresh()
+        # Keep earlier cuts editable underneath; this full-canvas cut is on top.
+        if self.composition['cells']==[{'rect':[0.,0.,1.,1.]}]:self.composition['cells']=[]
+        self.composition['cells'].append({'rect':[0.,0.,1.,1.],'asset':key,'scale':1.,'offset':[0.,0.]})
+        self.composition['freeform']=True;self.canvas.active=len(self.composition['cells'])-1;self.set_mode('move');self.refresh()
+        self.info.setText(f'선택 부분을 {self.base.width} × {self.base.height}px에 채웠습니다. 휠/드래그로 구도 조절')
     def move_layer(self,delta):
         cell=self.cell()
-        if 'asset' not in cell:return
+        if not cell or 'asset' not in cell:return
         x1,y1,x2,y2=cell['rect'];ox,oy=cell.get('offset',[0.,0.])
         cell['offset']=[max(-100.,min(100.,ox+delta[0]/(x2-x1))),max(-100.,min(100.,oy+delta[1]/(y2-y1)))];self.update_image()
     def scale_layer(self,steps):
         cell=self.cell()
-        if 'asset' not in cell or not steps:return
+        if not cell or 'asset' not in cell or not steps:return
         value=max(.05,min(32.,cell.get('scale',1.)*1.15**steps))
         if value==cell.get('scale',1.):return
-        self.finish_gesture();self.record();cell['scale']=value;self.refresh()
+        self.record();cell['scale']=value;self.refresh()
     def fit(self,cover):
         cell=self.cell()
-        if 'asset' not in cell:return
-        self.record();source=self.assets_cache[cell['asset']];x1,y1,x2,y2=cell['rect']
-        w,h=(x2-x1)*self.base.width,(y2-y1)*self.base.height
+        if not cell or 'asset' not in cell:return
+        self.record();source=self.assets_cache[cell['asset']];x1,y1,x2,y2=cell['rect'];w,h=(x2-x1)*self.base.width,(y2-y1)*self.base.height
         cell['scale']=1. if cover else max(.05,min(32.,min(w/source.width,h/source.height)/max(w/source.width,h/source.height)))
         cell['offset']=[0.,0.];self.refresh()
     def remove_layer(self):
-        if 'asset' not in self.cell():return
-        self.record();self.composition['cells'][self.canvas.active]={'rect':self.cell()['rect'][:]};self.refresh()
+        cell=self.cell()
+        if not cell or 'asset' not in cell:return
+        self.record();self.composition['cells'][self.canvas.active]={'rect':cell['rect'][:]};self.refresh()
+    def delete_cell(self):
+        if self.cell() is None:return
+        self.record();self.composition['cells'].pop(self.canvas.active);self.refresh()
+    def raise_cell(self):
+        if self.cell() is None or self.canvas.active==len(self.composition['cells'])-1:return
+        self.record();cell=self.composition['cells'].pop(self.canvas.active);self.composition['cells'].append(cell)
+        self.canvas.active=len(self.composition['cells'])-1;self.refresh()
     def reset(self):
-        self.record();self.composition=empty_composition();self.canvas.active=0;self.refresh()
+        self.record();self.composition=empty_composition();self.canvas.active=0;self.set_mode('draw');self.refresh()
     def undo(self):
         self.finish_gesture()
         if not self.history:return
@@ -180,5 +401,4 @@ class CutEditor(QDialog):
         self.history.append(copy.deepcopy(self.composition));self.composition=self.redo_history.pop();self.refresh()
     def apply(self):
         self.finish_gesture();used={c['asset'] for c in self.composition['cells'] if 'asset' in c}
-        self.composition['assets']={k:v for k,v in self.composition['assets'].items() if k in used}
-        self.accept()
+        self.composition['assets']={k:v for k,v in self.composition['assets'].items() if k in used};self.accept()

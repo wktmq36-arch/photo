@@ -27,7 +27,8 @@ def validate_composition(value,check_images=False):
         raise ValueError('잘못된 컷 편집 데이터')
     def numbers(values,count):
         return isinstance(values,list) and len(values)==count and all(isinstance(v,(int,float)) and math.isfinite(v) for v in values)
-    if not 1<=len(value['cells'])<=1024:raise ValueError('컷 개수는 1~1024개여야 합니다.')
+    if not 0<=len(value['cells'])<=1024:raise ValueError('컷 개수는 최대 1024개입니다.')
+    if not isinstance(value.get('freeform',False),bool):raise ValueError('잘못된 컷 배치 방식')
     gutter=value.get('gutter',0.)
     if not isinstance(gutter,(int,float)) or not math.isfinite(gutter) or not 0<=gutter<=.1:raise ValueError('잘못된 컷 간격')
     for key,data in value['assets'].items():
@@ -50,7 +51,12 @@ def render_composition(image,composition,cache=None):
     cache={} if cache is None else cache
     for cell in composition['cells']:
         key=cell.get('asset')
-        if not key:continue
+        if not key:
+            if composition.get('freeform') and composition.get('gutter'):
+                box=tuple(round(v*(width if i%2==0 else height)) for i,v in enumerate(cell['rect']))
+                gap=round(composition['gutter']*width)
+                if gap:ImageDraw.Draw(result).rectangle((box[0],box[1],max(box[0],box[2]-1),max(box[1],box[3]-1)),outline='white',width=gap)
+            continue
         if key not in cache:cache[key]=decode_asset(composition['assets'][key])
         source=cache[key];x1,y1,x2,y2=cell['rect']
         box=(round(x1*width),round(y1*height),round(x2*width),round(y2*height))
@@ -62,9 +68,12 @@ def render_composition(image,composition,cache=None):
         # Inverse mapping renders only the clipped cell, even at high zoom.
         patch=source.transform((cw,ch),Image.Transform.AFFINE,(1/ratio,0,-left/ratio,0,1/ratio,-top/ratio),Image.Resampling.BICUBIC)
         background=Image.new('RGBA',(cw,ch),'white');background.alpha_composite(patch)
+        if composition.get('freeform'):
+            gap=round(composition.get('gutter',0.)*width)
+            if gap:ImageDraw.Draw(background).rectangle((0,0,cw-1,ch-1),outline='white',width=gap)
         result.paste(background,box)
     gap=round(composition.get('gutter',0.)*width)
-    if gap:
+    if gap and not composition.get('freeform'):
         draw=ImageDraw.Draw(result)
         for cell in composition['cells']:
             x1,y1,x2,y2=cell['rect'];left,top,right,bottom=round(x1*width),round(y1*height),round(x2*width),round(y2*height)

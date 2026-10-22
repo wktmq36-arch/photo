@@ -426,7 +426,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.42'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.43'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -515,9 +515,9 @@ class Window(QMainWindow):
         self.canvas.zoomChanged.connect(lambda zoom:self.zoom_label.setText(f'{zoom*100:.0f}%'))
         view_controls.addWidget(QLabel('휠: 확대/축소 · Ctrl+드래그 또는 휠버튼 드래그: 이동'));view_controls.addStretch()
         cut_controls=QHBoxLayout();bottom_layout.addLayout(cut_controls)
-        for label,fn in [('컷용 그림 전체 복사',self.copy_for_cut),('컷 편집 / 붙여넣기',self.edit_cuts)]:
+        for label,fn in [('컷 편집 / 부분 자르기',self.edit_cuts)]:
             button=QPushButton(label);button.clicked.connect(fn);cut_controls.addWidget(button)
-        cut_controls.addWidget(QLabel('원본 유지 · 분할 / 위치 / 크기 조절'));cut_controls.addStretch()
+        cut_controls.addWidget(QLabel('영역 선택 → 자유 배치 · 원래 해상도로 채우기'));cut_controls.addStretch()
         brush_tools=QHBoxLayout(); bottom_layout.addLayout(brush_tools)
         brush_tools.addWidget(QLabel('도구'))
         self.tool=ToolPicker(); brush_tools.addWidget(self.tool)
@@ -1237,11 +1237,14 @@ if __name__=='__main__':
         from cut_editor import CutEditor
         cut_dialog=CutEditor(window.current(),window.ordered(),[window.list.item(i).icon() for i in range(window.list.count())],parent=window)
         cut_dialog.sources.setCurrentRow(0);cut_dialog.copy_source();cut_dialog.pick((0,[.5,.5],'vertical'));cut_dialog.paste()
-        cut_dialog.scale_layer(1);cut_dialog.fit(True);cut_dialog.apply()
+        cut_dialog.scale_layer(1);cut_dialog.fit(True)
+        cut_dialog.add_cell([.2,.2,.8,.8]);cut_dialog.paste()
+        cut_dialog.source_canvas.selection=[.25,.25,.75,.75];cut_dialog.source_selected(cut_dialog.source_canvas.selection)
+        cut_dialog.fill_original_resolution();cut_dialog.apply()
         window.apply_composition(cut_dialog.composition)
         assert window.current()['composition']['cells'][0].get('asset')
         cut_result=render_entry(read_pixels(window.current()['path']),window.current())
-        assert cut_result.getpixel((10,30))[:3]==(0,128,0)
+        assert cut_result.size==(80,60) and cut_result.getpixel((10,30))[:3]==(0,128,0)
         for index,entry in enumerate(window.ordered()):
             export_image(entry,Path(smoke_folder.name)/f'output{index}.png','PNG')
         window.dirty=False

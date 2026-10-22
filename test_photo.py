@@ -6,6 +6,89 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_free_cut_overlap_has_topmost_selection_and_borders(self):
+  from cut_editor import CutEditor
+  from composition import pixel_asset,render_composition
+  from PySide6.QtGui import QIcon
+  from PySide6.QtCore import Qt
+  from PySide6.QtTest import QTest
+  app=QApplication.instance() or QApplication([])
+  red,red_data=pixel_asset(Image.new('RGBA',(100,100),'red'));blue,blue_data=pixel_asset(Image.new('RGBA',(100,100),'blue'))
+  composition={'assets':{red:red_data,blue:blue_data},'freeform':True,'gutter':.02,'cells':[
+   {'rect':[.1,.1,.8,.8],'asset':red},{'rect':[.4,.05,.95,.95],'asset':blue}]}
+  image=Image.new('RGBA',(200,200),'green');result=render_composition(image,composition)
+  self.assertEqual(result.getpixel((159,100)),(0,0,255,255))
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'target.png';image.save(path);entry={'id':'t','path':str(path),'regions':[],'composition':composition}
+   editor=CutEditor(entry,[entry],[QIcon()]);editor.show();app.processEvents();editor.canvas.active=0;editor.set_mode('frame')
+   point=editor.canvas.image_rect([.5,.4,.6,.5]).center().toPoint();QTest.mouseClick(editor.canvas,Qt.MouseButton.LeftButton,pos=point)
+   self.assertEqual(editor.canvas.active,1);editor.canvas.active=0;editor.raise_cell();self.assertEqual(editor.cell()['asset'],red)
+   editor.undo();self.assertEqual(editor.composition['cells'][0]['asset'],red);editor.reject()
+ def test_source_selection_and_free_cut_use_actual_pointer_geometry(self):
+  from cut_editor import CutEditor
+  from composition import decode_asset
+  from imaging import render_entry
+  from PySide6.QtCore import Qt,QPoint
+  from PySide6.QtGui import QIcon
+  from PySide6.QtTest import QTest
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   source=Path(d)/'source.png';target=Path(d)/'target.png'
+   image=Image.new('RGB',(400,200),'red');image.paste('blue',(200,0,400,200));image.save(source)
+   Image.new('RGB',(400,200),'green').save(target)
+   entries=[{'id':'source','path':str(source),'regions':[]},{'id':'target','path':str(target),'regions':[]}]
+   editor=CutEditor(entries[1],entries,[QIcon(),QIcon()]);editor.show();app.processEvents();editor.sources.setCurrentRow(0);app.processEvents()
+   def point(canvas,x,y):
+    return QPoint(round(canvas.target.x()+canvas.target.width()*x),round(canvas.target.y()+canvas.target.height()*y))
+   sc=editor.source_canvas
+   QTest.mousePress(sc,Qt.MouseButton.LeftButton,pos=point(sc,.1,.1));QTest.mouseMove(sc,point(sc,.4,.8));QTest.mouseRelease(sc,Qt.MouseButton.LeftButton,pos=point(sc,.4,.8))
+   self.assertIsNotNone(sc.selection);box=editor.source_box();editor.copy_selection()
+   copied=decode_asset(editor.clipboard[1]);self.assertEqual(copied.size,(box[2]-box[0],box[3]-box[1]));self.assertEqual(copied.getextrema(),((255,255),(0,0),(0,0),(255,255)))
+   canvas=editor.canvas;editor.set_mode('draw')
+   QTest.mousePress(canvas,Qt.MouseButton.LeftButton,pos=point(canvas,.15,.2));QTest.mouseMove(canvas,point(canvas,.6,.7));QTest.mouseRelease(canvas,Qt.MouseButton.LeftButton,pos=point(canvas,.6,.7));app.processEvents()
+   self.assertEqual(len(editor.composition['cells']),1);rect=editor.cell()['rect'][:];self.assertAlmostEqual(rect[0],.15,delta=.005);self.assertLess(rect[2],.61)
+   editor.paste();self.assertEqual(editor.composition['assets'][editor.cell()['asset']],editor.clipboard[1])
+   result=render_entry(Image.new('RGBA',(400,200),'green'),dict(entries[1],composition=editor.composition))
+   self.assertEqual(result.getpixel((100,80)),(255,0,0,255));self.assertEqual(result.getpixel((10,10)),(0,128,0,255))
+   editor.set_mode('frame');corner=canvas.handles(rect)['se'].toPoint();before=len(editor.history)
+   QTest.mousePress(canvas,Qt.MouseButton.LeftButton,pos=corner);QTest.mouseMove(canvas,corner+QPoint(25,15));QTest.mouseRelease(canvas,Qt.MouseButton.LeftButton,pos=corner+QPoint(25,15))
+   changed=editor.cell()['rect'][:];self.assertGreater(changed[2],rect[2]);self.assertEqual(len(editor.history),before+1)
+   editor.undo();self.assertEqual(editor.cell()['rect'],rect);editor.redo();self.assertEqual(editor.cell()['rect'],changed)
+   center=canvas.image_rect(changed).center().toPoint()
+   QTest.mousePress(canvas,Qt.MouseButton.LeftButton,pos=center);QTest.mouseMove(canvas,center+QPoint(15,10));QTest.mouseRelease(canvas,Qt.MouseButton.LeftButton,pos=center+QPoint(15,10))
+   self.assertGreater(editor.cell()['rect'][0],changed[0]);self.assertAlmostEqual(editor.cell()['rect'][2]-editor.cell()['rect'][0],changed[2]-changed[0])
+   editor.reject()
+ def test_selected_crop_fills_original_resolution_and_supports_empty_layout(self):
+  from cut_editor import CutEditor
+  from composition import validate_composition
+  from PySide6.QtGui import QIcon
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'original.png';image=Image.new('RGB',(400,200),'red');image.paste('blue',(200,0,400,200));image.save(path)
+   entry={'id':'source','path':str(path),'regions':[]};editor=CutEditor(entry,[entry],[QIcon()])
+   editor.source_canvas.selection=[.1,.1,.4,.9];editor.source_selected(editor.source_canvas.selection)
+   editor.fill_original_resolution();editor.apply();validate_composition(editor.composition,check_images=True)
+   output=Path(d)/'cropped.png';export_image(dict(entry,composition=editor.composition),output,'PNG')
+   with Image.open(output) as result:self.assertEqual(result.size,(400,200));self.assertEqual(result.convert('RGB').getextrema(),((255,255),(0,0),(0,0)))
+   editor.delete_cell();self.assertEqual(editor.composition['cells'],[]);validate_composition(editor.composition)
+   editor.undo();self.assertEqual(len(editor.composition['cells']),1);editor.redo();editor.paste();self.assertEqual(len(editor.composition['cells']),1)
+   editor.reject()
+ def test_source_selection_handles_and_zoom_preserve_full_resolution_crop(self):
+  from cut_editor import CutEditor
+  from PySide6.QtCore import Qt,QPoint,QPointF
+  from PySide6.QtGui import QIcon,QWheelEvent
+  from PySide6.QtTest import QTest
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'source.png';Image.new('RGB',(3000,2000),'red').save(path)
+   entry={'id':'s','path':str(path),'regions':[]};editor=CutEditor(entry,[entry],[QIcon()]);editor.show();app.processEvents()
+   sc=editor.source_canvas;sc.selection=[.2,.2,.6,.6];corner=sc.handles(sc.selection)['se'].toPoint()
+   QTest.mousePress(sc,Qt.MouseButton.LeftButton,pos=corner);QTest.mouseMove(sc,corner+QPoint(20,15));QTest.mouseRelease(sc,Qt.MouseButton.LeftButton,pos=corner+QPoint(20,15))
+   self.assertGreater(sc.selection[2],.6);selected=sc.selection[:];box=editor.source_box()
+   center=sc.image_rect(selected).center();event=QWheelEvent(center,QPointF(sc.mapToGlobal(center.toPoint())),QPoint(),QPoint(0,240),Qt.MouseButton.NoButton,Qt.KeyboardModifier.NoModifier,Qt.ScrollPhase.NoScrollPhase,False)
+   QApplication.sendEvent(sc,event);self.assertEqual(sc.selection,selected);self.assertGreater(sc.view_zoom,1.)
+   editor.copy_selection();from composition import decode_asset
+   self.assertEqual(decode_asset(editor.clipboard[1]).size,(box[2]-box[0],box[3]-box[1]));editor.reject()
  def test_cut_composition_clips_pan_zoom_and_preserves_source(self):
   from composition import pixel_asset,render_composition
   source=Image.new('RGBA',(100,100),'red')
