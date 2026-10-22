@@ -4,7 +4,7 @@ from PySide6.QtCore import Qt,QRectF,QPointF,QSize,Signal,QTimer
 from PySide6.QtGui import QPainter,QColor,QPen,QImage,QPixmap,QKeySequence,QShortcut
 from PySide6.QtWidgets import (QDialog,QWidget,QVBoxLayout,QHBoxLayout,QPushButton,QLabel,
     QListWidget,QListWidgetItem,QSplitter,QDialogButtonBox,QMessageBox,QSpinBox,QLineEdit,
-    QAbstractItemView,QMenu)
+    QAbstractItemView,QMenu,QCheckBox)
 from composition import empty_composition,pixel_asset,decode_asset,render_composition
 from imaging import read_pixels,render_entry,render_clones,render_regions
 
@@ -137,20 +137,24 @@ class SourceCanvas(ImageCanvas):
 class PanelCanvas(ImageCanvas):
     picked=Signal(object);dragged=Signal(object);zoomed=Signal(object);copied=Signal(object);finished=Signal()
     created=Signal(object);geometryChanged=Signal(object)
+    nudged=Signal(object)
     def __init__(self):
-        super().__init__();self.cells=[];self.active=0;self.mode='frame';self.action=None
+        super().__init__();self.cells=[];self.active=0;self.mode='frame';self.action=None;self.show_guides=True
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
     def paintEvent(self,event):
         painter=QPainter(self);self.paint_image(painter)
-        if not self.pixmap:return
+        if not self.pixmap or not self.show_guides:return
         painter.setBrush(Qt.BrushStyle.NoBrush)
         for index,cell in enumerate(self.cells):
             rect=self.image_rect(cell['rect']);painter.setPen(QPen(QColor('#ffb347' if index==self.active else '#65baff'),2 if index==self.active else 1))
-            painter.drawRect(rect);painter.drawText(rect.adjusted(7,6,-4,-4),Qt.AlignmentFlag.AlignTop|Qt.AlignmentFlag.AlignLeft,str(index+1))
+            painter.drawRect(rect.adjusted(-3,-3,3,3));painter.drawText(rect.adjusted(7,6,-4,-4),Qt.AlignmentFlag.AlignTop|Qt.AlignmentFlag.AlignLeft,str(index+1))
         if self.mode in ('draw','copy') and self.start is not None and self.end is not None:
             painter.setPen(QPen(QColor('white'),2,Qt.PenStyle.DashLine));painter.drawRect(self.image_rect(self.rectangle(self.start,self.end)))
         elif 0<=self.active<len(self.cells):self.draw_handles(painter,self.cells[self.active]['rect'])
     def mousePressEvent(self,event):
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
         if self.begin_pan(event):return
+        if not self.show_guides:return
         if event.button()!=Qt.MouseButton.LeftButton or not self.pixmap:return
         self.update_target();pos=event.position();self.handle=None
         if self.mode not in ('draw','copy','vertical','horizontal') and 0<=self.active<len(self.cells):self.handle=self.handle_at(self.cells[self.active]['rect'],pos)
@@ -187,18 +191,30 @@ class PanelCanvas(ImageCanvas):
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:self.zoom_view(event)
         elif self.target.contains(event.position()) and 0<=self.active<len(self.cells):self.zoomed.emit(event.angleDelta().y()/120);event.accept()
         else:event.ignore()
+    def keyPressEvent(self,event):
+        directions={Qt.Key.Key_Left:(-1,0),Qt.Key.Key_Right:(1,0),Qt.Key.Key_Up:(0,-1),Qt.Key.Key_Down:(0,1)}
+        if event.key() in directions and not event.modifiers() & (Qt.KeyboardModifier.ControlModifier|Qt.KeyboardModifier.AltModifier):
+            dx,dy=directions[event.key()];step=10 if event.modifiers() & Qt.KeyboardModifier.ShiftModifier else 1
+            self.nudged.emit((dx*step,dy*step));event.accept();return
+        super().keyPressEvent(event)
 
 
 class CutEditor(QDialog):
-    def __init__(self,entry,entries,icons,clipboard=None,parent=None):
+    historyChanged=Signal()
+    def __init__(self,entry,entries,icons,clipboard=None,parent=None,embedded=False):
         super().__init__(parent);self.setWindowTitle('컷 편집 · 왼쪽에서 선택하고 오른쪽에 붙여넣기')
+        self.embedded=embedded
+        if embedded:self.setWindowFlags(Qt.WindowType.Widget)
         available=self.screen().availableGeometry();self.resize(min(1420,available.width()-40),min(900,available.height()-60))
         self.entry=entry;self.entries=entries;self.clipboard=clipboard;self.source_image=None;self.source_dirty=False
         self.composition=copy.deepcopy(entry.get('composition') or empty_composition())
         self.history=[];self.redo_history=[];self.gesture=None;self.assets_cache={}
         self.base=read_pixels(entry['path']);self.preview=self.base.copy();self.preview.thumbnail((1600,1600))
-        root=QVBoxLayout(self);intro=QLabel('① 가져올 그림에서 필요한 부분 드래그   →   ② 대상에 컷 그리기   →   ③ 붙여넣기')
-        intro.setStyleSheet('font-size:14px;font-weight:bold;padding:4px;');root.addWidget(intro)
+        root=QVBoxLayout(self);intro=QLabel('원본 영역 선택 → 컷 그리기 → 붙여넣기')
+        intro.setStyleSheet('font-size:14px;font-weight:bold;padding:4px;')
+        header=QHBoxLayout();root.addLayout(header);header.addWidget(intro,1)
+        self.source_toggle=QPushButton('원본 접기');header.addWidget(self.source_toggle)
+        self.final_preview=QCheckBox('완성본 보기');header.addWidget(self.final_preview)
         split=QSplitter();split.setHandleWidth(5);root.addWidget(split,1)
         left=QWidget();ll=QVBoxLayout(left);ll.setContentsMargins(0,0,3,0)
         self.search=QLineEdit();self.search.setPlaceholderText('가져올 그림 찾기 · 번호 또는 파일명');self.search.textChanged.connect(self.filter_sources);ll.addWidget(self.search)
@@ -213,6 +229,7 @@ class CutEditor(QDialog):
             button=QPushButton(label);button.clicked.connect(fn);source_controls.addWidget(button)
         self.source_info=QLabel('드래그: 영역 선택 · 모서리: 범위 조절 · 휠: 확대');self.source_info.setWordWrap(True);ll.addWidget(self.source_info)
         split.addWidget(left)
+        self.source_toggle.clicked.connect(lambda:self.toggle_source(left))
         right=QWidget();rl=QVBoxLayout(right);rl.setContentsMargins(3,0,0,0)
         title=QLabel(f'대상: {Path(entry["path"]).name}  ·  출력 {self.base.width} × {self.base.height}px');title.setWordWrap(True);rl.addWidget(title)
         toolbar=QHBoxLayout();rl.addLayout(toolbar);self.mode_buttons={}
@@ -227,6 +244,8 @@ class CutEditor(QDialog):
         self.canvas.picked.connect(self.pick);self.canvas.dragged.connect(self.move_layer);self.canvas.zoomed.connect(self.scale_layer)
         self.canvas.finished.connect(self.finish_gesture);self.canvas.copied.connect(self.copy_region)
         self.canvas.created.connect(self.add_cell);self.canvas.geometryChanged.connect(self.change_geometry)
+        self.canvas.nudged.connect(self.nudge)
+        self.final_preview.toggled.connect(self.show_final_preview)
         actions=QHBoxLayout();rl.addLayout(actions)
         self.paste_button=QPushButton('선택 부분 붙여넣기 →');self.paste_button.clicked.connect(self.paste)
         self.paste_button.setStyleSheet('background:#287fce;color:white;font-weight:bold;padding:9px;');actions.addWidget(self.paste_button)
@@ -247,17 +266,46 @@ class CutEditor(QDialog):
         self.border.valueChanged.connect(self.change_border);bottom.addWidget(self.border)
         self.info=QLabel();bottom.addWidget(self.info,1)
         buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText('적용');buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('취소')
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText('모자이크 모드로' if embedded else '적용');buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('편집 취소' if embedded else '취소')
         buttons.accepted.connect(self.apply);buttons.rejected.connect(self.reject);bottom.addWidget(buttons)
         self.shortcuts=[]
         for sequence,fn in [('Ctrl+C',self.copy_selection),('Ctrl+V',self.paste),('Ctrl+Z',self.undo),('Ctrl+Y',self.redo),('Ctrl+Shift+Z',self.redo)]:
+            if embedded and sequence in ('Ctrl+Z','Ctrl+Y','Ctrl+Shift+Z'):continue
             shortcut=QShortcut(QKeySequence(sequence),self);shortcut.activated.connect(fn);self.shortcuts.append(shortcut)
+        for button in self.findChildren(QPushButton):
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            if embedded:button.setAutoDefault(False);button.setDefault(False)
+        self.border.lineEdit().returnPressed.connect(self.canvas.setFocus)
+        self.gutter.lineEdit().returnPressed.connect(self.canvas.setFocus)
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.setInterval(16);self.timer.timeout.connect(self.refresh)
         self.sources.currentRowChanged.connect(self.load_source);self.source_canvas.selectionChanged.connect(self.source_selected)
         if clipboard:
             self.source_image=decode_asset(clipboard[1]);self.source_canvas.set_image(self.preview_source(),True);self.source_title.setText('복사해 둔 그림 · 드래그해서 필요한 부분 선택')
         elif entries:self.sources.setCurrentRow(next((i for i,e in enumerate(entries) if e['id']==entry['id']),0))
         self.set_mode('frame' if entry.get('composition') else 'draw');self.refresh()
+    def toggle_source(self,widget):
+        widget.setVisible(not widget.isVisible());self.source_toggle.setText('원본 접기' if widget.isVisible() else '원본 펼치기')
+    def keyPressEvent(self,event):
+        if self.embedded and event.key() in (Qt.Key.Key_Return,Qt.Key.Key_Enter):
+            self.canvas.setFocus();event.accept();return
+        super().keyPressEvent(event)
+    def show_final_preview(self,enabled):
+        self.canvas.show_guides=not enabled;self.canvas.update();self.canvas.setFocus()
+    def nudge(self,delta):
+        cell=self.cell()
+        if cell is None:return
+        dx,dy=delta
+        if self.canvas.mode=='move' and 'asset' in cell:
+            x1,y1,x2,y2=cell['rect'];offset=cell.get('offset',[0.,0.])
+            new=[max(-100.,min(100.,offset[0]+dx/self.base.width/(x2-x1))),max(-100.,min(100.,offset[1]+dy/self.base.height/(y2-y1)))]
+            if new==offset:return
+            self.record();cell['offset']=new
+        else:
+            rect=self.canvas.moved_rect(cell['rect'],[dx/self.base.width,dy/self.base.height])
+            if rect==cell['rect']:return
+            self.record()
+            self.change_geometry((self.canvas.active,rect))
+        self.refresh()
     def filter_sources(self,text):
         for row in range(self.sources.count()):self.sources.item(row).setHidden(text.casefold() not in self.sources.item(row).text().casefold())
     def preview_source(self):
@@ -293,15 +341,16 @@ class CutEditor(QDialog):
         self.select_whole_source();self.copy_selection()
     def set_mode(self,mode):
         self.canvas.mode=mode
+        self.canvas.setFocus()
         for key,button in self.mode_buttons.items():button.setChecked(key==mode)
         messages={'draw':'대상 그림에서 드래그하여 원하는 크기의 새 컷을 만드세요.',
-                  'frame':'컷 안쪽 드래그: 컷 이동 · 흰 모서리/변: 컷 크기 조절',
-                  'move':'컷 안쪽 드래그: 그림 위치 · 휠: 그림 확대/축소 · 흰 모서리: 컷 크기',
+                  'frame':'드래그/방향키: 컷 이동 · Shift+방향키: 10px · 모서리: 크기 조절',
+                  'move':'드래그/방향키: 그림 위치 · Shift+방향키: 10px · 휠: 그림 확대/축소',
                   'vertical':'나눌 컷의 원하는 위치를 클릭하면 세로로 나뉩니다.',
                   'horizontal':'나눌 컷의 원하는 위치를 클릭하면 가로로 나뉩니다.'}
         self.help.setText(messages.get(mode,''))
     def record(self):
-        self.finish_gesture();self.history.append(copy.deepcopy(self.composition));self.history=self.history[-200:];self.redo_history.clear()
+        self.finish_gesture();self.history.append(copy.deepcopy(self.composition));self.history=self.history[-1000:];self.redo_history.clear()
     def update_image(self):
         if not self.timer.isActive():self.timer.start()
     def refresh(self):
@@ -313,6 +362,7 @@ class CutEditor(QDialog):
         self.info.setText(f'컷 {len(self.canvas.cells)}개 · 선택 {self.canvas.active+1}번' if self.canvas.active>=0 else '컷을 그리거나 원래 해상도로 채우세요.')
         cell=self.cell();self.scale_label.setText(f'{cell.get("scale",1.)*100:.0f}%' if cell and 'asset' in cell else '')
         self.border.blockSignals(True);self.border.setEnabled(cell is not None);self.border.setValue(round(cell.get('border',0.)*self.base.width) if cell else 0);self.border.blockSignals(False)
+        self.historyChanged.emit()
     def pick(self,event):
         index,point,mode=event;self.finish_gesture();self.canvas.active=index
         if mode in ('vertical','horizontal'):
@@ -342,7 +392,7 @@ class CutEditor(QDialog):
         self.record();cell['border']=value/self.base.width;self.refresh()
     def finish_gesture(self):
         if self.gesture is not None and self.gesture!=self.composition:
-            self.history.append(self.gesture);self.history=self.history[-200:];self.redo_history.clear()
+            self.history.append(self.gesture);self.history=self.history[-1000:];self.redo_history.clear()
         self.gesture=None
     def cell(self):
         return self.composition['cells'][self.canvas.active] if 0<=self.canvas.active<len(self.composition['cells']) else None
@@ -352,7 +402,7 @@ class CutEditor(QDialog):
         if box[2]>box[0] and box[3]>box[1]:
             self.clipboard=pixel_asset(image.crop(box));self.source_image=decode_asset(self.clipboard[1]);self.source_canvas.selection=None
             self.source_canvas.set_image(self.preview_source(),True);self.source_dirty=False
-        self.set_mode('move');self.refresh()
+        self.set_mode('move');self.refresh();self.canvas.setFocus()
     def paste(self):
         self.copy_selection()
         if not self.clipboard:self.info.setText('먼저 왼쪽에서 가져올 그림을 선택하세요.');return
@@ -360,7 +410,7 @@ class CutEditor(QDialog):
         if self.cell() is None:
             self.composition['cells'].append({'rect':[.1,.1,.9,.9]});self.canvas.active=len(self.composition['cells'])-1;self.composition['freeform']=True
         key,data=self.clipboard;self.composition['assets'][key]=data;self.cell().update(asset=key,scale=1.,offset=[0.,0.])
-        self.set_mode('move');self.refresh()
+        self.set_mode('move');self.refresh();self.canvas.setFocus()
     def fill_original_resolution(self):
         self.copy_selection()
         if not self.clipboard:self.info.setText('먼저 왼쪽에서 필요한 부분을 선택하세요.');return

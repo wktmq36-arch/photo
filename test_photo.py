@@ -6,6 +6,58 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_inline_cut_mode_keyboard_live_border_save_and_normal_preview(self):
+  import json
+  from PySide6.QtCore import Qt
+  from PySide6.QtTest import QTest
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'target.png';Image.new('RGB',(400,200),'green').save(path)
+   w=Window();w.show();w.activateWindow();w.add_paths([str(path)]);app.processEvents()
+   editor=w.edit_cuts();self.assertIs(w.editor_stack.currentWidget(),editor);self.assertFalse(editor.isWindow())
+   self.assertTrue(all(not action.isEnabled() for action in w.navigation_actions))
+   editor.add_cell([.2,.2,.8,.8]);editor.paste();editor.set_mode('frame');app.processEvents()
+   original=editor.cell()['rect'][:]
+   QTest.keyClick(editor.canvas,Qt.Key.Key_Right);self.assertAlmostEqual(editor.cell()['rect'][0]-original[0],1/400)
+   QTest.keyClick(editor.canvas,Qt.Key.Key_Down,Qt.KeyboardModifier.ShiftModifier);self.assertAlmostEqual(editor.cell()['rect'][1]-original[1],10/200)
+   self.assertEqual(w.list.currentRow(),0);self.assertEqual(len(w.list.selectedItems()),1)
+   w.undo();self.assertAlmostEqual(editor.cell()['rect'][1],original[1]);w.redo();self.assertAlmostEqual(editor.cell()['rect'][1]-original[1],10/200)
+   editor.set_mode('move');old=editor.cell()['offset'][:];rect=editor.cell()['rect'][:]
+   QTest.keyClick(editor.canvas,Qt.Key.Key_Left);self.assertEqual(editor.cell()['rect'],rect)
+   self.assertAlmostEqual(editor.cell()['offset'][0]-old[0],-1/(400*(rect[2]-rect[0])))
+   x,y=round(rect[0]*400),round((rect[1]+rect[3])/2*200)
+   editor.border.setFocus();QTest.keyClick(editor.border,Qt.Key.Key_A,Qt.KeyboardModifier.ControlModifier);QTest.keyClicks(editor.border,'6')
+   self.assertEqual(editor.canvas.pixmap.toImage().pixelColor(x,y).getRgb(),(0,0,0,255))
+   QTest.keyClick(editor.border,Qt.Key.Key_Return);self.assertIs(w.cut_editor,editor);self.assertTrue(editor.canvas.hasFocus())
+   editor.border.setValue(0);self.assertNotEqual(editor.canvas.pixmap.toImage().pixelColor(x,y).getRgb(),(0,0,0,255))
+   editor.border.setValue(6);editor.final_preview.setChecked(True);self.assertFalse(editor.canvas.show_guides)
+   project=str(Path(d)/'inline.photo.json');self.assertTrue(w.write_project(project));self.assertIs(w.cut_editor,editor)
+   self.assertEqual(json.loads(Path(project).read_text(encoding='utf-8'))['images'][0]['composition']['cells'][0]['border'],6/400)
+   w.finish_cut_mode(True);self.assertIsNone(w.cut_editor);self.assertIs(w.editor_stack.currentWidget(),w.splitter)
+   self.assertTrue(all(action.isEnabled() for action in w.navigation_actions))
+   deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   self.assertEqual(w.canvas.pixmap.toImage().pixelColor(x,y).getRgb(),(0,0,0,255))
+   w.dirty=False;w.close()
+ def test_inline_draft_cancel_close_and_apply_do_not_lose_edits(self):
+  from unittest.mock import patch
+  from PySide6.QtWidgets import QMessageBox
+  from PySide6.QtGui import QCloseEvent
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'target.png';Image.new('RGB',(200,100),'red').save(path)
+   w=Window();w.add_paths([str(path)]);w.write_project(str(Path(d)/'project.photo.json'))
+   editor=w.edit_cuts();editor.border.setValue(4);self.assertTrue(w.has_cut_changes());self.assertNotIn('composition',w.current())
+   with patch('main.QMessageBox.exec',return_value=QMessageBox.StandardButton.Cancel):
+    event=QCloseEvent();w.closeEvent(event);self.assertFalse(event.isAccepted())
+   self.assertIs(w.cut_editor,editor);self.assertNotIn('composition',w.current())
+   editor.reject();self.assertIsNone(w.cut_editor);self.assertNotIn('composition',w.current())
+   editor=w.edit_cuts();editor.border.setValue(5);editor.apply()
+   self.assertIsNone(w.cut_editor);self.assertEqual(w.current()['composition']['cells'][0]['border'],5/200)
+   w.undo();self.assertNotIn('composition',w.current());w.redo();self.assertIn('composition',w.current())
+   deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close()
  def test_cut_black_border_respects_gap_overlap_and_exports(self):
   from composition import pixel_asset,render_composition,validate_composition
   key,data=pixel_asset(Image.new('RGBA',(100,100),'red'))

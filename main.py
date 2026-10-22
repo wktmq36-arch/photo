@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt, QSize, QRect, QRectF, QPointF, Signal, QObject, Q
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKeySequence, QFontDatabase, QFont, QShortcut, QDrag, QIcon
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem,
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
-    QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu, QDockWidget, QToolButton, QButtonGroup, QStyle, QStyleOptionSlider)
+    QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu, QDockWidget, QToolButton, QButtonGroup, QStyle, QStyleOptionSlider, QStackedWidget)
 from exporting import prepare_output
 from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, render_clones, ClonePreview, export_image, export_pair
 from composition import pixel_asset,render_composition,validate_composition
@@ -426,7 +426,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.44'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.45'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -439,6 +439,7 @@ class Window(QMainWindow):
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.history_labels=[]; self.redo_stack=[]; self.snapshot_cache={}; self.strength_drag_recorded=False; self.dirty=False; self.project=None
         self.clone_cache_key=None;self.clone_cache_image=None;self.clone_live=None;self.clone_live_entry=None
         self.cut_clipboard=None;self.composition_cache_key=None;self.composition_cache_image=None
+        self.cut_editor=None;self.navigation_actions=[]
         self.clone_timer=QTimer(self);self.clone_timer.setSingleShot(True);self.clone_timer.timeout.connect(self.flush_clone_preview)
         self.thumb_cache=OrderedDict();self.thumb_waiters={};self.thumb_cache_bytes=0
         self.pool=QThreadPool(self); self.pool.setMaxThreadCount(4)
@@ -482,10 +483,15 @@ class Window(QMainWindow):
             self.output_checks[key]=check;export_controls.addWidget(check)
         self.format=QComboBox(); self.format.addItems(['PNG','WEBP','JPEG']); export_controls.addWidget(self.format)
         self.export_button=QPushButton('순서대로 내보내기'); self.export_button.clicked.connect(self.export); export_controls.addWidget(self.export_button)
+        mode_bar=QHBoxLayout();layout.addLayout(mode_bar)
+        self.cut_mode_button=QPushButton('컷 편집 모드');self.cut_mode_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.cut_mode_button.clicked.connect(self.toggle_cut_mode);mode_bar.addWidget(self.cut_mode_button)
+        mode_bar.addWidget(QLabel('모자이크 ↔ 컷 배치 · 같은 화면에서 전환'));mode_bar.addStretch()
+        self.editor_stack=QStackedWidget();layout.addWidget(self.editor_stack,1)
         self.splitter=QSplitter(Qt.Orientation.Horizontal); splitter=self.splitter
         splitter.setHandleWidth(5); splitter.setChildrenCollapsible(False)
         splitter.setStyleSheet('QSplitter::handle:horizontal {background:#c2cbd6;border:0;} QSplitter::handle:horizontal:hover {background:#2788e8;}')
-        layout.addWidget(splitter,1)
+        self.editor_stack.addWidget(splitter)
         left=QWidget(); ll=QVBoxLayout(left)
         thumbnail_header=QHBoxLayout();ll.addLayout(thumbnail_header)
         thumbnail_header.addWidget(QLabel('드래그로 순서 변경 · Delete로 제외'))
@@ -514,10 +520,6 @@ class Window(QMainWindow):
         self.zoom_label=QLabel('100%');view_controls.addWidget(self.zoom_label)
         self.canvas.zoomChanged.connect(lambda zoom:self.zoom_label.setText(f'{zoom*100:.0f}%'))
         view_controls.addWidget(QLabel('휠: 확대/축소 · Ctrl+드래그 또는 휠버튼 드래그: 이동'));view_controls.addStretch()
-        cut_controls=QHBoxLayout();bottom_layout.addLayout(cut_controls)
-        for label,fn in [('컷 편집 / 부분 자르기',self.edit_cuts)]:
-            button=QPushButton(label);button.clicked.connect(fn);cut_controls.addWidget(button)
-        cut_controls.addWidget(QLabel('영역 선택 → 자유 배치 · 원래 해상도로 채우기'));cut_controls.addStretch()
         brush_tools=QHBoxLayout(); bottom_layout.addLayout(brush_tools)
         brush_tools.addWidget(QLabel('도구'))
         self.tool=ToolPicker(); brush_tools.addWidget(self.tool)
@@ -580,6 +582,7 @@ class Window(QMainWindow):
         self.strength.sliderReleased.connect(self.begin_strength_change)
         for key,fn in [('Delete',self.remove_selected),('Ctrl+S',self.save_project),('Ctrl+Shift+S',self.save_project_as),('Ctrl+O',self.load_project),('Right',lambda:self.navigate(1)),('Left',lambda:self.navigate(-1))]:
             action=QAction(self); action.setShortcut(QKeySequence(key)); action.triggered.connect(fn); self.addAction(action)
+            if key in ('Delete','Right','Left'):self.navigation_actions.append(action)
         self.undo_shortcut=QShortcut(QKeySequence.StandardKey.Undo,self)
         self.undo_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self.undo_shortcut.activated.connect(self.undo)
@@ -662,6 +665,8 @@ class Window(QMainWindow):
             state.append(cached)
         return (state,entry['id'] if entry else None,self.canvas.active)
     def update_history_controls(self):
+        if self.cut_editor is not None:
+            self.undo_button.setEnabled(bool(self.cut_editor.history));self.redo_button.setEnabled(bool(self.cut_editor.redo_history));return
         self.undo_button.setEnabled(bool(self.history));self.redo_button.setEnabled(bool(self.redo_stack))
         self.undo_button.setToolTip('Ctrl+Z');self.redo_button.setToolTip('Ctrl+Y 또는 Ctrl+Shift+Z')
     def snapshot(self,label='작업 변경'):
@@ -669,12 +674,14 @@ class Window(QMainWindow):
         self.history=self.history[-HISTORY_LIMIT:];self.history_labels.append(label);self.history_labels=self.history_labels[-HISTORY_LIMIT:]
         self.redo_stack.clear();self.update_history_controls();self.dirty=True
     def undo(self):
+        if self.cut_editor is not None:self.cut_editor.undo();return
         if not self.history:return
         label=self.history_labels.pop() if self.history_labels else '작업 변경'
         self.redo_stack.append((self.capture_state(),label))
         self.restore_state(self.history.pop());self.update_history_controls()
         self.status.setText('실행 취소: '+label)
     def redo(self):
+        if self.cut_editor is not None:self.cut_editor.redo();return
         if not self.redo_stack:return
         state,label=self.redo_stack.pop()
         self.history.append(self.capture_state());self.history=self.history[-HISTORY_LIMIT:]
@@ -758,6 +765,7 @@ class Window(QMainWindow):
     def folder_dialog(self):
         path=QFileDialog.getExistingDirectory(self,'그림 폴더'); self.add_paths([path] if path else [])
     def add_paths(self,paths,insertion_row=None):
+        if self.cut_editor is not None:self.finish_cut_mode(True)
         expanded=[]
         for path in paths:
             p=Path(path)
@@ -795,6 +803,7 @@ class Window(QMainWindow):
         self.status.setText(f'총 {self.list.count()}장 · 모자이크 {sum(bool(e["regions"]) for e in self.entries.values())}장 · 메인 {sum(bool(e.get("main_selected")) for e in self.entries.values())}장')
     def order_changed(self):self.dirty=True; self.renumber()
     def remove_selected(self):
+        if self.cut_editor is not None:self.finish_cut_mode(True)
         rows=sorted(self.list.row(item) for item in self.list.selectedItems())
         if not rows:return
         # Pick by the current visual order, never by Qt's implicit selection
@@ -916,22 +925,40 @@ class Window(QMainWindow):
         entry['composition']=copy.deepcopy(composition)
         self.clone_cache_key=None;self.composition_cache_key=None;self.render();self.renumber()
     def edit_cuts(self):
+        if self.cut_editor is not None:return self.cut_editor
         entry=self.current()
         if not entry:return
         from cut_editor import CutEditor
-        dialog=None
         try:
-            dialog=CutEditor(entry,self.ordered(),[self.list.item(i).icon() for i in range(self.list.count())],self.cut_clipboard,self)
-            shortcuts=[self.undo_shortcut]+self.redo_shortcuts
-            for shortcut in shortcuts:shortcut.setEnabled(False)
-            try:result=dialog.exec()
-            finally:
-                for shortcut in shortcuts:shortcut.setEnabled(True)
-            self.cut_clipboard=dialog.clipboard
-            if result:self.apply_composition(dialog.composition)
+            editor=CutEditor(entry,self.ordered(),[self.list.item(i).icon() for i in range(self.list.count())],self.cut_clipboard,self,embedded=True)
+            self.cut_editor=editor;self.editor_stack.addWidget(editor);self.editor_stack.setCurrentWidget(editor)
+            editor.accepted.connect(lambda:self.finish_cut_mode(True));editor.rejected.connect(lambda:self.finish_cut_mode(False))
+            editor.historyChanged.connect(self.update_history_controls)
+            for action in self.navigation_actions:action.setEnabled(False)
+            self.cut_mode_button.setText('모자이크 모드로');self.update_history_controls();editor.canvas.setFocus()
+            return editor
         except Exception as exc:QMessageBox.warning(self,'컷 편집 실패',str(exc))
-        finally:
-            if dialog is not None:dialog.timer.stop();dialog.deleteLater()
+    def toggle_cut_mode(self):
+        if self.cut_editor is not None:self.finish_cut_mode(True)
+        else:self.edit_cuts()
+    def sync_cut_editor(self):
+        editor=self.cut_editor
+        if editor is None:return
+        editor.finish_gesture()
+        from composition import empty_composition
+        if editor.composition!=(self.current().get('composition') or empty_composition()):self.apply_composition(editor.composition)
+    def has_cut_changes(self):
+        if self.cut_editor is None:return False
+        from composition import empty_composition
+        return self.cut_editor.composition!=(self.current().get('composition') or empty_composition())
+    def finish_cut_mode(self,apply=True):
+        editor=self.cut_editor
+        if editor is None:return
+        if apply:self.sync_cut_editor()
+        self.cut_clipboard=editor.clipboard;self.cut_editor=None;editor.timer.stop()
+        self.editor_stack.setCurrentWidget(self.splitter);self.editor_stack.removeWidget(editor);editor.deleteLater()
+        for action in self.navigation_actions:action.setEnabled(True)
+        self.cut_mode_button.setText('컷 편집 모드');self.update_history_controls();self.render();self.list.setFocus()
     def committed_clones(self,entry,image):
         key=self.clone_key(entry,image)
         if key!=self.clone_cache_key:
@@ -1056,6 +1083,7 @@ class Window(QMainWindow):
         if self.busy:
             QMessageBox.information(self,'내보내기 중','내보내기가 끝난 후 새 작업을 시작하세요.');return False
         if not self.confirm_discard():return False
+        self.finish_cut_mode(False)
         self.clone_timer.stop();self.clone_live=None;self.clone_live_entry=None
         self.clone_cache_key=None;self.composition_cache_key=None;self.cut_clipboard=None
         self.populate([]);self.history=[];self.history_labels=[];self.redo_stack=[];self.snapshot_cache={}
@@ -1090,6 +1118,7 @@ class Window(QMainWindow):
         return self.write_project(path)
     def write_project(self,path):
         if not path:return False
+        self.sync_cut_editor()
         try:
             entry=self.current()
             view={'current_id':entry['id'] if entry else None,'scroll':self.list.verticalScrollBar().value()}
@@ -1100,7 +1129,7 @@ class Window(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self,'저장 실패',str(exc));return False
     def confirm_discard(self):
-        if not self.dirty:return True
+        if not self.dirty and not self.has_cut_changes():return True
         buttons=QMessageBox.StandardButton
         box=QMessageBox(QMessageBox.Icon.Question,'작업 저장',
             '저장하지 않은 변경 사항이 있습니다. 저장할까요?',buttons.Save|buttons.Discard|buttons.Cancel,self)
@@ -1134,6 +1163,7 @@ class Window(QMainWindow):
                     if r.get('kind')=='brush':
                         if not isinstance(r.get('points'),list) or not r['points'] or not 0<r.get('radius',0)<=.1:raise ValueError('잘못된 브러시 영역')
                         if not all(len(point)==2 and all(isinstance(v,(int,float)) and 0<=v<=1 for v in point) for point in r['points']):raise ValueError('잘못된 브러시 좌표')
+            self.finish_cut_mode(False)
             self.populate(entries); self.history=[]; self.history_labels=[]; self.redo_stack=[];self.snapshot_cache={};self.update_history_controls(); self.project=str(Path(path).resolve()); self.dirty=False
             self.restore_project_view(data.get('view',{}))
             self.settings.setValue('session/lastProject',self.project);self.settings.remove('session/lastView');self.settings.sync()
@@ -1156,6 +1186,7 @@ class Window(QMainWindow):
         box.setDefaultButton(buttons.No);box.setEscapeButton(buttons.No)
         return box.exec()==buttons.Yes
     def export(self):
+        self.sync_cut_editor()
         if not self.entries or self.busy:return
         outputs={key:check.isChecked() for key,check in self.output_checks.items()}
         if not any(outputs.values()):
@@ -1278,6 +1309,10 @@ if __name__=='__main__':
         cut_result=render_entry(read_pixels(window.current()['path']),window.current())
         assert cut_result.size==(80,60) and cut_result.getpixel((10,30))[:3]==(0,128,0)
         assert cut_result.getpixel((0,30))[:3]==(0,0,0)
+        inline=window.edit_cuts();assert not inline.isWindow() and window.editor_stack.currentWidget() is inline
+        inline.canvas.active=len(inline.composition['cells'])-1;inline.set_mode('move');inline.nudge((1,0));inline.border.setValue(2)
+        inline.final_preview.setChecked(True);assert not inline.canvas.show_guides
+        window.finish_cut_mode(True);assert window.cut_editor is None
         for index,entry in enumerate(window.ordered()):
             export_image(entry,Path(smoke_folder.name)/f'output{index}.png','PNG')
         window.dirty=False
