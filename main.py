@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, 
     QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu, QDockWidget, QToolButton, QButtonGroup, QStyle, QStyleOptionSlider)
 from exporting import prepare_output
 from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, render_clones, ClonePreview, export_image, export_pair
+from composition import pixel_asset,render_composition,validate_composition
 
 def to_qimage(image):
     rgba = image if image.mode=='RGBA' else image.convert('RGBA')
@@ -425,7 +426,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.41'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.42'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -437,6 +438,7 @@ class Window(QMainWindow):
         self.recent_projects=[path for path in self.recent_projects if isinstance(path,str)]
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.history_labels=[]; self.redo_stack=[]; self.snapshot_cache={}; self.strength_drag_recorded=False; self.dirty=False; self.project=None
         self.clone_cache_key=None;self.clone_cache_image=None;self.clone_live=None;self.clone_live_entry=None
+        self.cut_clipboard=None;self.composition_cache_key=None;self.composition_cache_image=None
         self.clone_timer=QTimer(self);self.clone_timer.setSingleShot(True);self.clone_timer.timeout.connect(self.flush_clone_preview)
         self.thumb_cache=OrderedDict();self.thumb_waiters={};self.thumb_cache_bytes=0
         self.pool=QThreadPool(self); self.pool.setMaxThreadCount(4)
@@ -512,6 +514,10 @@ class Window(QMainWindow):
         self.zoom_label=QLabel('100%');view_controls.addWidget(self.zoom_label)
         self.canvas.zoomChanged.connect(lambda zoom:self.zoom_label.setText(f'{zoom*100:.0f}%'))
         view_controls.addWidget(QLabel('휠: 확대/축소 · Ctrl+드래그 또는 휠버튼 드래그: 이동'));view_controls.addStretch()
+        cut_controls=QHBoxLayout();bottom_layout.addLayout(cut_controls)
+        for label,fn in [('컷용 그림 전체 복사',self.copy_for_cut),('컷 편집 / 붙여넣기',self.edit_cuts)]:
+            button=QPushButton(label);button.clicked.connect(fn);cut_controls.addWidget(button)
+        cut_controls.addWidget(QLabel('원본 유지 · 분할 / 위치 / 크기 조절'));cut_controls.addStretch()
         brush_tools=QHBoxLayout(); bottom_layout.addLayout(brush_tools)
         brush_tools.addWidget(QLabel('도구'))
         self.tool=ToolPicker(); brush_tools.addWidget(self.tool)
@@ -782,7 +788,7 @@ class Window(QMainWindow):
         self.update_selection_count()
         for i in range(self.list.count()):
             item=self.list.item(i); entry=self.entries[item.data(Qt.ItemDataRole.UserRole)]
-            item.setText(f'{i+1:03d}  '+Path(entry['path']).name+('  [도장]' if entry.get('clones') else ''))
+            item.setText(f'{i+1:03d}  '+Path(entry['path']).name+('  [도장]' if entry.get('clones') else '')+('  [컷]' if entry.get('composition') else ''))
             item.setData(MOSAIC_ROLE,bool(entry['regions']))
             item.setData(MAIN_ROLE,bool(entry.get('main_selected',False)))
             item.setToolTip(entry['path']+(f'\n모자이크 적용 · {len(entry["regions"])}개 영역' if entry['regions'] else '\n모자이크 없음'))
@@ -889,6 +895,43 @@ class Window(QMainWindow):
             else:self.title.setText('읽기 실패: '+result[1])
     def clone_key(self,entry,image):
         return (id(entry),id(image),len(entry.get('clones',[])))
+    def composed_image(self,entry,image):
+        composition=entry.get('composition')
+        if not composition:return image
+        key=(id(entry),id(image),id(composition))
+        if key!=self.composition_cache_key:
+            self.composition_cache_image=render_composition(image,composition);self.composition_cache_key=key
+        return self.composition_cache_image
+    def copy_for_cut(self):
+        entry=self.current()
+        if not entry:return
+        try:
+            self.cut_clipboard=pixel_asset(render_entry(read_pixels(entry['path']),entry))
+            self.status.setText('모자이크 포함 그림 복사 완료 · 대상 썸네일을 선택하고 컷 편집을 여세요.')
+        except Exception as exc:QMessageBox.warning(self,'컷 복사 실패',str(exc))
+    def apply_composition(self,composition):
+        entry=self.current()
+        if not entry or composition==entry.get('composition'):return
+        validate_composition(composition);self.snapshot('컷 편집 / 합성')
+        entry['composition']=copy.deepcopy(composition)
+        self.clone_cache_key=None;self.composition_cache_key=None;self.render();self.renumber()
+    def edit_cuts(self):
+        entry=self.current()
+        if not entry:return
+        from cut_editor import CutEditor
+        dialog=None
+        try:
+            dialog=CutEditor(entry,self.ordered(),[self.list.item(i).icon() for i in range(self.list.count())],self.cut_clipboard,self)
+            shortcuts=[self.undo_shortcut]+self.redo_shortcuts
+            for shortcut in shortcuts:shortcut.setEnabled(False)
+            try:result=dialog.exec()
+            finally:
+                for shortcut in shortcuts:shortcut.setEnabled(True)
+            self.cut_clipboard=dialog.clipboard
+            if result:self.apply_composition(dialog.composition)
+        except Exception as exc:QMessageBox.warning(self,'컷 편집 실패',str(exc))
+        finally:
+            if dialog is not None:dialog.timer.stop();dialog.deleteLater()
     def committed_clones(self,entry,image):
         key=self.clone_key(entry,image)
         if key!=self.clone_cache_key:
@@ -900,7 +943,7 @@ class Window(QMainWindow):
         self.clone_timer.stop()
         self.clone_live.update(entry['clones'][-1]['points'])
         if finish:
-            image=self.cache.get(entry['path'])
+            image=self.composed_image(entry,self.cache.get(entry['path']))
             self.clone_cache_image=self.clone_live.result;self.clone_cache_key=self.clone_key(entry,image)
             self.clone_live=None;self.clone_live_entry=None
         self.render()
@@ -910,6 +953,7 @@ class Window(QMainWindow):
         if not entry or entry['path'] not in self.cache:return
         image=self.cache[entry['path']]
         if not self.original.isChecked():
+            image=self.composed_image(entry,image)
             cloned=self.clone_live.result if self.clone_live is not None and entry is self.clone_live_entry else self.committed_clones(entry,image)
             image=render_regions(cloned,entry['regions']) if entry['regions'] else cloned
         self.canvas.pixmap=QPixmap.fromImage(to_qimage(image))
@@ -922,7 +966,7 @@ class Window(QMainWindow):
         if event[0]=='clone_source':
             self.status.setText('도장 기준점 선택 완료 · 지울 부위를 드래그하세요.');return
         if event[0]=='clone_start':
-            image=self.cache.get(entry['path'])
+            image=self.composed_image(entry,self.cache.get(entry['path'])) if entry['path'] in self.cache else None
             if image is None:return
             self.snapshot('복제 도장')
             base=self.committed_clones(entry,image)
@@ -1043,6 +1087,7 @@ class Window(QMainWindow):
             data=json.loads(Path(path).read_text(encoding='utf-8')); entries=data['images']
             if data.get('version')!=1:raise ValueError('지원하지 않는 작업 파일입니다.')
             for e in entries:
+                if 'composition' in e:validate_composition(e['composition'],check_images=True)
                 if not isinstance(e.get('main_selected',False),bool):raise ValueError('잘못된 메인 선택 상태')
                 if not isinstance(e['path'],str) or not isinstance(e['regions'],list):raise ValueError('잘못된 작업 파일')
                 if not isinstance(e.get('clones',[]),list):raise ValueError('잘못된 도장 데이터')
@@ -1189,6 +1234,14 @@ if __name__=='__main__':
                       QDropEvent(QPointF(pos),Qt.DropAction.CopyAction,mime,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)):
             QApplication.sendEvent(viewport,event);assert event.isAccepted()
         assert [entry['path'] for entry in window.ordered()]==[smoke_paths[1],str(external),smoke_paths[2],smoke_paths[0]]
+        from cut_editor import CutEditor
+        cut_dialog=CutEditor(window.current(),window.ordered(),[window.list.item(i).icon() for i in range(window.list.count())],parent=window)
+        cut_dialog.sources.setCurrentRow(0);cut_dialog.copy_source();cut_dialog.pick((0,[.5,.5],'vertical'));cut_dialog.paste()
+        cut_dialog.scale_layer(1);cut_dialog.fit(True);cut_dialog.apply()
+        window.apply_composition(cut_dialog.composition)
+        assert window.current()['composition']['cells'][0].get('asset')
+        cut_result=render_entry(read_pixels(window.current()['path']),window.current())
+        assert cut_result.getpixel((10,30))[:3]==(0,128,0)
         for index,entry in enumerate(window.ordered()):
             export_image(entry,Path(smoke_folder.name)/f'output{index}.png','PNG')
         window.dirty=False

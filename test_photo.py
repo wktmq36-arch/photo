@@ -6,6 +6,87 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_cut_composition_clips_pan_zoom_and_preserves_source(self):
+  from composition import pixel_asset,render_composition
+  source=Image.new('RGBA',(100,100),'red')
+  from PIL import ImageDraw
+  ImageDraw.Draw(source).rectangle((50,0,99,99),fill='blue')
+  key,data=pixel_asset(source);base=Image.new('RGBA',(200,100),'green')
+  composition={'assets':{key:data},'cells':[{'rect':[0.,0.,.5,1.],'asset':key,'scale':1.,'offset':[0.,0.]},{'rect':[.5,0.,1.,1.]}]}
+  result=render_composition(base,composition)
+  self.assertEqual(result.getpixel((25,50)),(255,0,0,255));self.assertEqual(result.getpixel((75,50)),(0,0,255,255))
+  self.assertEqual(result.getpixel((125,50)),base.getpixel((125,50)))
+  composition['cells'][0]['offset']=[.5,0.]
+  moved=render_composition(base,composition);self.assertEqual(moved.getpixel((75,50)),(255,0,0,255))
+  self.assertEqual(moved.getpixel((5,50)),(255,255,255,255));self.assertEqual(moved.getpixel((125,50)),base.getpixel((125,50)))
+  composition['cells'][0].update(scale=2.,offset=[0.,0.])
+  scaled=render_composition(base,composition);self.assertEqual(scaled.getpixel((125,50)),base.getpixel((125,50)))
+  self.assertEqual(source.getpixel((75,50)),(0,0,255,255))
+ def test_cut_copy_is_flattened_and_export_survives_removed_source(self):
+  from composition import decode_asset
+  from imaging import render_entry
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   source=Path(d)/'source.png';target=Path(d)/'target.png'
+   Image.effect_noise((200,100),100).convert('RGB').save(source,pnginfo=None);Image.new('RGB',(200,100),'green').save(target)
+   w=Window();w.add_paths([str(source),str(target)])
+   w.current()['regions']=[{'rect':[0.,0.,1.,1.],'strength':100}]
+   from imaging import read_pixels
+   expected=render_entry(read_pixels(source),w.current())
+   w.copy_for_cut();key,data=w.cut_clipboard;self.assertEqual(decode_asset(data).tobytes(),expected.tobytes());self.assertFalse(decode_asset(data).info)
+   w.list.setCurrentRow(1);composition={'assets':{key:data},'cells':[{'rect':[0.,0.,1.,1.],'asset':key,'scale':1.,'offset':[0.,0.]}]}
+   w.apply_composition(composition);self.assertIn('composition',w.current());w.undo();self.assertNotIn('composition',w.current());w.redo()
+   saved=str(Path(d)/'cuts.photo.json');w.write_project(saved)
+   deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   source.unlink();w.dirty=False;self.assertTrue(w.open_project(saved));self.assertEqual(w.current()['path'],str(target))
+   output=Path(d)/'out.png';export_image(w.current(),output,'PNG')
+   with Image.open(output) as result:self.assertEqual(result.convert('RGBA').tobytes(),expected.tobytes());self.assertFalse(result.info)
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close()
+ def test_cut_editor_pointer_split_paste_move_copy_and_cancel(self):
+  from cut_editor import CutEditor
+  from PySide6.QtCore import Qt,QPoint,QPointF
+  from PySide6.QtGui import QIcon,QWheelEvent
+  from PySide6.QtTest import QTest
+  import copy
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   source=Path(d)/'source.png';target=Path(d)/'target.png'
+   Image.new('RGB',(120,80),'red').save(source);Image.new('RGB',(200,120),'green').save(target)
+   entries=[{'id':'source','path':str(source),'regions':[]},{'id':'target','path':str(target),'regions':[]}]
+   original=copy.deepcopy(entries);editor=CutEditor(entries[1],entries,[QIcon(),QIcon()]);editor.show();app.processEvents()
+   editor.sources.setCurrentRow(0);editor.copy_source();self.assertIsNotNone(editor.clipboard)
+   editor.set_mode('vertical');rect=editor.canvas.target;center=rect.center().toPoint()
+   QTest.mouseClick(editor.canvas,Qt.MouseButton.LeftButton,pos=center);app.processEvents()
+   self.assertEqual(len(editor.composition['cells']),2);editor.paste();self.assertIn('asset',editor.composition['cells'][0])
+   start=QPoint(round(rect.x()+rect.width()*.25),round(rect.center().y()));end=start+QPoint(25,15)
+   QTest.mousePress(editor.canvas,Qt.MouseButton.LeftButton,pos=start);QTest.mouseMove(editor.canvas,end);QTest.mouseRelease(editor.canvas,Qt.MouseButton.LeftButton,pos=end)
+   app.processEvents();self.assertNotEqual(editor.cell()['offset'],[0.,0.]);offset=editor.cell()['offset'][:]
+   editor.undo();self.assertEqual(editor.cell()['offset'],[0.,0.]);editor.redo();self.assertEqual(editor.cell()['offset'],offset)
+   wheel=QWheelEvent(QPointF(start),QPointF(editor.canvas.mapToGlobal(start)),QPoint(),QPoint(0,120),Qt.MouseButton.NoButton,Qt.KeyboardModifier.NoModifier,Qt.ScrollPhase.NoScrollPhase,False)
+   QApplication.sendEvent(editor.canvas,wheel);self.assertGreater(editor.cell()['scale'],1.)
+   editor.fit(False);self.assertLessEqual(editor.cell()['scale'],1.)
+   editor.copy_region([0.,0.,.5,1.]);editor.canvas.active=1;editor.paste();self.assertIn('asset',editor.cell())
+   editor.remove_layer();self.assertNotIn('asset',editor.cell());editor.undo();self.assertIn('asset',editor.cell())
+   editor.reject();self.assertEqual(entries,original)
+ def test_cut_data_validation_rejects_invalid_geometry_and_missing_assets(self):
+  from composition import validate_composition,empty_composition
+  validate_composition(empty_composition())
+  for change in [{'rect':[0,0,float('nan'),1]},{'rect':[0,0,1,1],'asset':'missing'},{'rect':[0,0,1,1],'asset':'x','scale':float('inf')}]:
+   with self.assertRaises(ValueError):validate_composition({'assets':{'x':'unused'},'cells':[change]})
+ def test_cut_mosaic_remains_last_and_gap_is_exported(self):
+  from composition import pixel_asset,render_composition
+  from imaging import render_entry,render_regions
+  source=Image.effect_noise((200,100),100).convert('RGBA');key,data=pixel_asset(source)
+  base=Image.new('RGBA',(200,100),'green')
+  composition={'assets':{key:data},'cells':[{'rect':[0.,0.,.5,1.],'asset':key},{'rect':[.5,0.,1.,1.],'asset':key}],'gutter':.03}
+  composed=render_composition(base,composition)
+  self.assertEqual(composed.getpixel((100,50)),(255,255,255,255))
+  regions=[{'rect':[0.,0.,.4,1.],'strength':100}]
+  result=render_entry(base,{'regions':regions,'composition':composition})
+  self.assertEqual(result.tobytes(),render_regions(composed,regions).tobytes())
+  self.assertNotEqual(result.crop((0,0,70,90)).tobytes(),composed.crop((0,0,70,90)).tobytes())
  def test_mosaic_repeated_strokes_and_order_do_not_change_strength(self):
   from imaging import render_regions
   image=Image.effect_noise((503,397),100).convert('RGBA')

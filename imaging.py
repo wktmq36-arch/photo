@@ -1,6 +1,7 @@
 from PIL import Image, ImageOps, ImageDraw, ImageFilter, ImageChops
 from pathlib import Path
 import math
+from composition import render_composition
 
 EXTENSIONS = {'.webp', '.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'}
 
@@ -135,7 +136,8 @@ class ClonePreview:
 
 def render_entry(image,entry):
     # Retouch first; censor last, so a clone can never undo a mosaic.
-    cloned=render_clones(image,entry.get('clones',[]))
+    composed=render_composition(image,entry.get('composition'))
+    cloned=render_clones(composed,entry.get('clones',[]))
     return render_regions(cloned,entry['regions']) if entry['regions'] else cloned
 
 def export_image(entry, destination, fmt):
