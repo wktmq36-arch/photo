@@ -30,7 +30,8 @@ def apply_theme(app):
         QListWidget#projectList {padding:4px;}
         QListWidget#projectList::item {padding:0 7px;}
         QListWidget#thumbnailList {background:#202936;color:#e6edf7;}
-        QListWidget#thumbnailList::item:selected {background:#354e70;color:white;}
+        QListWidget#thumbnailList::item:hover {background:#202936;color:#e6edf7;}
+        QListWidget#thumbnailList::item:selected, QListWidget#thumbnailList::item:selected:hover {background:#354e70;color:white;}
         QDockWidget {font-weight:600;}
         QDockWidget::title {background:#e7edf5;padding:7px 9px;border-radius:4px;}
         QScrollArea {border:0;background:transparent;}
