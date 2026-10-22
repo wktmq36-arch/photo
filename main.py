@@ -1,11 +1,11 @@
 import sys, json, uuid, copy, time
 from pathlib import Path
 from collections import OrderedDict
-from PySide6.QtCore import Qt, QSize, QRect, QRectF, QPointF, Signal, QObject, QRunnable, QThreadPool, QTimer, QMimeData, QItemSelectionModel, QSettings
+from PySide6.QtCore import Qt, QSize, QRect, QRectF, QPointF, Signal, QObject, QRunnable, QThreadPool, QTimer, QMimeData, QItemSelectionModel, QSettings, QEvent
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKeySequence, QFontDatabase, QFont, QShortcut, QDrag, QIcon
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem,
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
-    QMessageBox, QSpinBox, QAbstractSpinBox, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu, QDockWidget, QToolButton, QButtonGroup, QStyle, QStackedWidget)
+    QMessageBox, QSpinBox, QAbstractSpinBox, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu, QDockWidget, QToolButton, QButtonGroup, QStyle, QStackedWidget, QGridLayout, QSizePolicy)
 from exporting import prepare_output
 from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, render_clones, ClonePreview, export_image, export_pair
 from composition import pixel_asset,render_composition,validate_composition
@@ -410,7 +410,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.47'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.48'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -430,8 +430,12 @@ class Window(QMainWindow):
         self.preview_pool=QThreadPool(self); self.preview_pool.setMaxThreadCount(2)
         self.export_pool=QThreadPool(self); self.export_pool.setMaxThreadCount(1)
         self.jobs=set(); self.errors=[]; self.busy=False
-        root=QWidget(); self.setCentralWidget(root); layout=QVBoxLayout(root)
-        top=QHBoxLayout(); layout.addLayout(top)
+        root=QWidget(); self.setCentralWidget(root); layout=QVBoxLayout(root);layout.setContentsMargins(4,4,4,4);layout.setSpacing(4)
+        self.header=QWidget();self.header_grid=QGridLayout(self.header);self.header_grid.setContentsMargins(0,0,0,0);self.header_grid.setSpacing(4)
+        self.header.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Preferred);self.header_grid.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+        layout.addWidget(self.header);self.header_stacked=None
+        self.action_controls=QWidget();top=QHBoxLayout(self.action_controls);top.setContentsMargins(0,0,0,0);top.setSpacing(4)
+        self.header_grid.addWidget(self.action_controls,0,0,1,2)
         for label,fn in [('새 작업',self.new_project),('파일 추가',self.add_dialog),('폴더 추가',self.folder_dialog),('작업 열기',self.load_project),('작업 저장',self.save_project),('다른 이름으로 저장',self.save_project_as),('실행 취소',self.undo),('다시 실행',self.redo),('목록에서 제외',self.remove_selected)]:
             button=QPushButton(label); button.clicked.connect(fn); top.addWidget(button)
             icons={'새 작업':QStyle.StandardPixmap.SP_FileIcon,'파일 추가':QStyle.StandardPixmap.SP_FileIcon,'폴더 추가':QStyle.StandardPixmap.SP_DirIcon,
@@ -454,12 +458,14 @@ class Window(QMainWindow):
         history_toggle.toggled.connect(self.history_dock.setVisible);self.history_dock.visibilityChanged.connect(history_toggle.setChecked)
         top.addWidget(history_toggle);self.history_toggle=history_toggle
         top.addStretch()
-        export_controls=QHBoxLayout();layout.addLayout(export_controls)
-        folder_button=QPushButton('저장 위치 변경');folder_button.clicked.connect(self.choose_export_folder);export_controls.addWidget(folder_button)
+        self.export_controls=QWidget();export_controls=QHBoxLayout(self.export_controls);export_controls.setContentsMargins(0,0,0,0);export_controls.setSpacing(4);export_controls.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.export_controls.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Preferred)
+        folder_button=QPushButton('저장 위치 변경');folder_button.clicked.connect(self.choose_export_folder);top.addWidget(folder_button)
         self.export_folder_label=QLabel(self.export_folder or '저장 위치: 최초 내보내기 때 선택');self.export_folder_label.setToolTip(self.export_folder)
-        self.export_folder_label.setMaximumWidth(320);export_controls.addWidget(self.export_folder_label)
-        export_controls.addStretch();export_controls.addWidget(QLabel('폴더 이름'))
-        self.export_name=QLineEdit(str(self.settings.value('export/name','a')));self.export_name.setMaximumWidth(150);export_controls.addWidget(self.export_name)
+        self.export_folder_label.setMaximumWidth(180);self.export_folder_label.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Preferred);top.addWidget(self.export_folder_label)
+        top.setStretchFactor(self.export_folder_label,1)
+        export_controls.addWidget(QLabel('폴더 이름'))
+        self.export_name=QLineEdit(str(self.settings.value('export/name','a')));self.export_name.setMinimumWidth(90);self.export_name.setMaximumWidth(150);export_controls.addWidget(self.export_name)
         self.output_checks={}
         for key,label in [('cen','처리본'),('uncen','원본용'),('main','메인용')]:
             check=QCheckBox(label);check.setChecked(self.settings.value('export/'+key,True,type=bool))
@@ -467,11 +473,11 @@ class Window(QMainWindow):
             self.output_checks[key]=check;export_controls.addWidget(check)
         self.format=QComboBox(); self.format.addItems(['PNG','WEBP','JPEG']); export_controls.addWidget(self.format)
         self.export_button=QPushButton('순서대로 내보내기'); self.export_button.clicked.connect(self.export); export_controls.addWidget(self.export_button)
-        mode_bar=QHBoxLayout();layout.addLayout(mode_bar)
+        self.mode_controls=QWidget();mode_bar=QHBoxLayout(self.mode_controls);mode_bar.setContentsMargins(0,0,0,0);mode_bar.setSpacing(4)
         self.cut_mode_button=QPushButton('컷 편집 모드');self.cut_mode_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.cut_mode_button.clicked.connect(self.toggle_cut_mode);mode_bar.addWidget(self.cut_mode_button)
-        mode_bar.addWidget(QLabel('모자이크 ↔ 컷 배치 · 같은 화면에서 전환'));mode_bar.addStretch()
-        self.tool_controls=QWidget();layout.addWidget(self.tool_controls)
+        self.tool_controls=QWidget();mode_bar.addWidget(self.tool_controls,1)
+        self.header_grid.addWidget(self.mode_controls,1,0);self.header_grid.addWidget(self.export_controls,1,1)
         self.editor_stack=QStackedWidget();layout.addWidget(self.editor_stack,1)
         self.splitter=QSplitter(Qt.Orientation.Horizontal); splitter=self.splitter
         splitter.setHandleWidth(5); splitter.setChildrenCollapsible(False)
@@ -583,6 +589,20 @@ class Window(QMainWindow):
         self.refresh_recent_projects()
         self.update_history_controls()
         self.setAcceptDrops(True)
+        self.header.installEventFilter(self);self.adjust_header()
+    def eventFilter(self,watched,event):
+        if watched is self.header and event.type()==QEvent.Type.Resize:self.adjust_header()
+        return super().eventFilter(watched,event)
+    def adjust_header(self):
+        minimum=self.mode_controls.minimumSizeHint().width()+self.export_controls.minimumSizeHint().width()+self.header_grid.horizontalSpacing()
+        stacked=self.header.width()<minimum
+        if stacked==self.header_stacked:return
+        self.header_stacked=stacked
+        self.header_grid.removeWidget(self.mode_controls);self.header_grid.removeWidget(self.export_controls)
+        if stacked:
+            self.header_grid.addWidget(self.mode_controls,1,0,1,2);self.header_grid.addWidget(self.export_controls,2,0,1,2)
+        else:
+            self.header_grid.addWidget(self.mode_controls,1,0);self.header_grid.addWidget(self.export_controls,1,1)
     def change_tool(self,index):
         name=['box','brush','clone'][index]
         self.canvas.tool=name;self.settings.setValue('tools/selected',index)
