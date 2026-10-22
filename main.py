@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt, QSize, QRect, QRectF, QPointF, Signal, QObject, Q
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QAction, QKeySequence, QFontDatabase, QFont, QShortcut, QDrag, QIcon
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem,
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
-    QMessageBox, QSlider, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu, QDockWidget, QToolButton, QButtonGroup, QStyle, QStyleOptionSlider, QStackedWidget)
+    QMessageBox, QSpinBox, QAbstractSpinBox, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu, QDockWidget, QToolButton, QButtonGroup, QStyle, QStackedWidget)
 from exporting import prepare_output
 from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, render_clones, ClonePreview, export_image, export_pair
 from composition import pixel_asset,render_composition,validate_composition
@@ -31,38 +31,12 @@ def tool_icon(index):
         painter.drawRoundedRect(QRectF(6,18,20,7),2,2);painter.drawRect(4,27,24,3)
     painter.end();return QIcon(pixmap)
 
-class StrengthSlider(QSlider):
+class NumericControl(QSpinBox):
     def __init__(self,parent=None):
-        super().__init__(Qt.Orientation.Horizontal,parent)
+        super().__init__(parent)
         self.wheel_remainder=0
-        self.track_drag=False
-        self.setSingleStep(1);self.setPageStep(1)
-    def mousePressEvent(self,event):
-        if event.button()==Qt.MouseButton.LeftButton:
-            option=QStyleOptionSlider();self.initStyleOption(option)
-            handle=self.style().subControlRect(QStyle.ComplexControl.CC_Slider,option,QStyle.SubControl.SC_SliderHandle,self)
-            if not handle.contains(event.position().toPoint()):
-                self.track_drag=True
-                groove=self.style().subControlRect(QStyle.ComplexControl.CC_Slider,option,QStyle.SubControl.SC_SliderGroove,self)
-                start=groove.x();span=max(1,groove.width()-handle.width())
-                position=round(event.position().x()-start-handle.width()/2)
-                self.setSliderDown(True)
-                self.setValue(QStyle.sliderValueFromPosition(self.minimum(),self.maximum(),position,span,option.upsideDown))
-                event.accept();return
-        super().mousePressEvent(event)
-    def mouseMoveEvent(self,event):
-        if self.track_drag:
-            option=QStyleOptionSlider();self.initStyleOption(option)
-            handle=self.style().subControlRect(QStyle.ComplexControl.CC_Slider,option,QStyle.SubControl.SC_SliderHandle,self)
-            groove=self.style().subControlRect(QStyle.ComplexControl.CC_Slider,option,QStyle.SubControl.SC_SliderGroove,self)
-            position=round(event.position().x()-groove.x()-handle.width()/2)
-            self.setValue(QStyle.sliderValueFromPosition(self.minimum(),self.maximum(),position,max(1,groove.width()-handle.width()),option.upsideDown))
-            event.accept();return
-        super().mouseMoveEvent(event)
-    def mouseReleaseEvent(self,event):
-        if self.track_drag and event.button()==Qt.MouseButton.LeftButton:
-            self.track_drag=False;self.setSliderDown(False);event.accept();return
-        super().mouseReleaseEvent(event)
+        self.setSingleStep(1);self.setFixedWidth(70);self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
     def wheelEvent(self,event):
         self.wheel_remainder+=event.angleDelta().y()
         steps=int(self.wheel_remainder/120)
@@ -426,7 +400,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.45'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.46'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -436,7 +410,7 @@ class Window(QMainWindow):
         except (ValueError,TypeError):self.recent_projects=[]
         if not isinstance(self.recent_projects,list):self.recent_projects=[]
         self.recent_projects=[path for path in self.recent_projects if isinstance(path,str)]
-        self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.history_labels=[]; self.redo_stack=[]; self.snapshot_cache={}; self.strength_drag_recorded=False; self.dirty=False; self.project=None
+        self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.history_labels=[]; self.redo_stack=[]; self.snapshot_cache={};  self.dirty=False; self.project=None
         self.clone_cache_key=None;self.clone_cache_image=None;self.clone_live=None;self.clone_live_entry=None
         self.cut_clipboard=None;self.composition_cache_key=None;self.composition_cache_image=None
         self.cut_editor=None;self.navigation_actions=[]
@@ -487,6 +461,7 @@ class Window(QMainWindow):
         self.cut_mode_button=QPushButton('컷 편집 모드');self.cut_mode_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.cut_mode_button.clicked.connect(self.toggle_cut_mode);mode_bar.addWidget(self.cut_mode_button)
         mode_bar.addWidget(QLabel('모자이크 ↔ 컷 배치 · 같은 화면에서 전환'));mode_bar.addStretch()
+        self.tool_controls=QWidget();layout.addWidget(self.tool_controls)
         self.editor_stack=QStackedWidget();layout.addWidget(self.editor_stack,1)
         self.splitter=QSplitter(Qt.Orientation.Horizontal); splitter=self.splitter
         splitter.setHandleWidth(5); splitter.setChildrenCollapsible(False)
@@ -520,27 +495,27 @@ class Window(QMainWindow):
         self.zoom_label=QLabel('100%');view_controls.addWidget(self.zoom_label)
         self.canvas.zoomChanged.connect(lambda zoom:self.zoom_label.setText(f'{zoom*100:.0f}%'))
         view_controls.addWidget(QLabel('휠: 확대/축소 · Ctrl+드래그 또는 휠버튼 드래그: 이동'));view_controls.addStretch()
-        brush_tools=QHBoxLayout(); bottom_layout.addLayout(brush_tools)
+        brush_tools=QHBoxLayout(self.tool_controls);brush_tools.setContentsMargins(0,0,0,0)
         brush_tools.addWidget(QLabel('도구'))
         self.tool=ToolPicker(); brush_tools.addWidget(self.tool)
         self.tool.currentIndexChanged.connect(self.change_tool)
         self.tool.activated.connect(lambda:self.list.setFocus(Qt.FocusReason.OtherFocusReason))
         brush_tools.addWidget(QLabel('브러시 크기'))
-        self.brush_size=QSlider(Qt.Orientation.Horizontal); self.brush_size.setRange(5,200); self.brush_size.setValue(50)
+        self.brush_size=NumericControl(); self.brush_size.setRange(5,200); self.brush_size.setValue(50)
         self.brush_size.valueChanged.connect(self.change_brush_size)
         brush_tools.addWidget(self.brush_size)
-        self.brush_value=QLabel('50'); brush_tools.addWidget(self.brush_value)
-        self.brush_size.valueChanged.connect(lambda value:self.brush_value.setText(str(value)))
-        softness_tools=QHBoxLayout();bottom_layout.addLayout(softness_tools)
+        softness_tools=brush_tools
         softness_tools.addWidget(QLabel('도장 경계 부드러움'))
-        self.clone_softness=QSlider(Qt.Orientation.Horizontal);self.clone_softness.setRange(0,100);self.clone_softness.setValue(50)
+        self.clone_softness=NumericControl();self.clone_softness.setRange(0,100);self.clone_softness.setValue(50)
         self.clone_softness.valueChanged.connect(lambda value:setattr(self.canvas,'clone_softness',value/100))
         softness_tools.addWidget(self.clone_softness)
-        softness_tools.addWidget(QLabel('도장: Alt+클릭으로 기준점 · 드래그로 덮기'))
         tools=QHBoxLayout(); bottom_layout.addLayout(tools)
-        tools.addWidget(QLabel('모자이크 강도'))
-        self.strength=StrengthSlider(); self.strength.setTracking(True); self.strength.setRange(2,100); self.strength.setValue(20); tools.addWidget(self.strength)
-        self.value=QLabel('20'); tools.addWidget(self.value)
+        brush_tools.addWidget(QLabel('모자이크 강도'))
+        self.strength=NumericControl();self.strength.setKeyboardTracking(False);self.strength.setRange(2,100);self.strength.setValue(20);brush_tools.addWidget(self.strength)
+        brush_tools.addStretch()
+        for control in (self.brush_size,self.clone_softness,self.strength):
+            control.setToolTip('숫자 직접 입력 · 휠로 1씩 조절 · Enter로 그림 목록에 복귀')
+            control.lineEdit().returnPressed.connect(lambda:self.list.setFocus(Qt.FocusReason.OtherFocusReason))
         delete_region=QPushButton('선택 영역 삭제'); tools.addWidget(delete_region); delete_region.clicked.connect(self.remove_region)
         self.original=QPushButton('원본 비교'); self.original.setCheckable(True); tools.addWidget(self.original); self.original.toggled.connect(self.render)
         batch_tools=QHBoxLayout(); bottom_layout.addLayout(batch_tools)
@@ -577,9 +552,6 @@ class Window(QMainWindow):
         self.strength.valueChanged.connect(self.strength_changed)
         self.strength.valueChanged.connect(lambda value:self.settings.setValue('tools/strength',value))
         self.clone_softness.valueChanged.connect(lambda value:self.settings.setValue('tools/softness',value))
-        self.strength.sliderPressed.connect(self.begin_strength_change)
-        self.strength.sliderMoved.connect(self.strength.setValue)
-        self.strength.sliderReleased.connect(self.begin_strength_change)
         for key,fn in [('Delete',self.remove_selected),('Ctrl+S',self.save_project),('Ctrl+Shift+S',self.save_project_as),('Ctrl+O',self.load_project),('Right',lambda:self.navigate(1)),('Left',lambda:self.navigate(-1))]:
             action=QAction(self); action.setShortcut(QKeySequence(key)); action.triggered.connect(fn); self.addAction(action)
             if key in ('Delete','Right','Left'):self.navigation_actions.append(action)
@@ -604,7 +576,7 @@ class Window(QMainWindow):
         self.canvas.tool=name;self.settings.setValue('tools/selected',index)
         value=self.tool_sizes[name]
         self.brush_size.blockSignals(True);self.brush_size.setValue(value);self.brush_size.blockSignals(False)
-        self.brush_value.setText(str(value));self.canvas.brush_radius=value/2000;self.canvas.update()
+        self.canvas.brush_radius=value/2000;self.canvas.update()
     def change_brush_size(self,value):
         name=self.canvas.tool
         self.tool_sizes[name]=value;self.settings.setValue('tools/sizes/'+name,value)
@@ -932,6 +904,7 @@ class Window(QMainWindow):
         try:
             editor=CutEditor(entry,self.ordered(),[self.list.item(i).icon() for i in range(self.list.count())],self.cut_clipboard,self,embedded=True)
             self.cut_editor=editor;self.editor_stack.addWidget(editor);self.editor_stack.setCurrentWidget(editor)
+            self.tool_controls.setEnabled(False)
             editor.accepted.connect(lambda:self.finish_cut_mode(True));editor.rejected.connect(lambda:self.finish_cut_mode(False))
             editor.historyChanged.connect(self.update_history_controls)
             for action in self.navigation_actions:action.setEnabled(False)
@@ -959,6 +932,7 @@ class Window(QMainWindow):
         self.editor_stack.setCurrentWidget(self.splitter);self.editor_stack.removeWidget(editor);editor.deleteLater()
         for action in self.navigation_actions:action.setEnabled(True)
         self.cut_mode_button.setText('컷 편집 모드');self.update_history_controls();self.render();self.list.setFocus()
+        self.tool_controls.setEnabled(True)
     def committed_clones(self,entry,image):
         key=self.clone_key(entry,image)
         if key!=self.clone_cache_key:
@@ -986,6 +960,7 @@ class Window(QMainWindow):
         self.canvas.pixmap=QPixmap.fromImage(to_qimage(image))
         self.canvas.regions=[] if self.original.isChecked() else entry['regions']; self.canvas.update()
     def region_event(self,event):
+        self.list.setFocus(Qt.FocusReason.OtherFocusReason)
         entry=self.current()
         if not entry or self.original.isChecked():return
         if event[0]=='clone_missing':
@@ -1020,7 +995,7 @@ class Window(QMainWindow):
         else:
             self.canvas.active=event[1]
             if event[1]>=0:
-                self.strength.blockSignals(True); self.strength.setValue(entry['regions'][event[1]]['strength']); self.strength.blockSignals(False); self.value.setText(str(self.strength.value()))
+                self.strength.blockSignals(True); self.strength.setValue(entry['regions'][event[1]]['strength']); self.strength.blockSignals(False)
         self.render(); self.renumber()
     def brush_bounds(self,region):
         image=self.cache.get(self.current()['path'])
@@ -1028,15 +1003,11 @@ class Window(QMainWindow):
         radius=region['radius']; points=region['points']
         region['rect']=[max(0,min(p[0] for p in points)-radius),max(0,min(p[1] for p in points)-radius*aspect),
                         min(1,max(p[0] for p in points)+radius),min(1,max(p[1] for p in points)+radius*aspect)]
-    def begin_strength_change(self):
-        self.strength_drag_recorded=False
     def strength_changed(self,value):
-        self.value.setText(str(value));entry=self.current();index=self.canvas.active
+        entry=self.current();index=self.canvas.active
         if not entry or not 0<=index<len(entry['regions']):return
         if entry['regions'][index]['strength']==value:return
-        if not self.strength.isSliderDown() or not self.strength_drag_recorded:
-            self.snapshot('모자이크 강도 변경')
-            self.strength_drag_recorded=self.strength.isSliderDown()
+        self.snapshot('모자이크 강도 변경')
         entry['regions'][index]['strength']=value;self.dirty=True;self.render()
     def clear_mosaics(self,ids):
         targets=[self.entries[eid] for eid in set(ids) if eid in self.entries and self.entries[eid]['regions']]
@@ -1070,7 +1041,7 @@ class Window(QMainWindow):
             for region in entry['regions']:region['strength']=strength
         # Updating the slider here must not create a separate edit or history entry.
         self.strength.blockSignals(True);self.strength.setValue(strength);self.strength.blockSignals(False)
-        self.value.setText(str(strength));self.original.setChecked(False);self.render();self.renumber()
+        self.original.setChecked(False);self.render();self.renumber()
         self.status.setText(f'{len(changed)}장 · {sum(len(e["regions"]) for e in changed)}개 영역 강도를 {strength}로 변경했습니다. Ctrl+Z로 일괄 취소')
     def remove_region(self):
         entry=self.current(); i=self.canvas.active
@@ -1259,6 +1230,7 @@ if __name__=='__main__':
     window=Window(); window.show()
     if '--smoke-test' in sys.argv:
         assert not app.windowIcon().isNull() and not window.windowIcon().isNull()
+        assert all(isinstance(control,QSpinBox) and control.parentWidget() is window.tool_controls for control in (window.brush_size,window.clone_softness,window.strength))
         if sys.platform=='win32':
             app_id=ctypes.c_wchar_p()
             assert ctypes.windll.shell32.GetCurrentProcessExplicitAppUserModelID(ctypes.byref(app_id))==0

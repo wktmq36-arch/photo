@@ -357,17 +357,15 @@ class Tests(unittest.TestCase):
    deadline=time.monotonic()+10
    while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
    w.dirty=False;w.close()
- def test_strength_slider_click_position_and_wheel_steps(self):
-  from main import StrengthSlider
+ def test_numeric_control_text_entry_and_wheel_steps(self):
+  from main import NumericControl
   from PySide6.QtCore import Qt,QPoint,QPointF
   from PySide6.QtGui import QWheelEvent
   from PySide6.QtTest import QTest
   app=QApplication.instance() or QApplication([])
-  slider=StrengthSlider();slider.setRange(2,100);slider.resize(400,30);slider.show();app.processEvents()
-  slider.setValue(2);QTest.mouseClick(slider,Qt.MouseButton.LeftButton,pos=QPoint(300,15))
-  self.assertTrue(74<=slider.value()<=78);self.assertFalse(slider.isSliderDown())
-  slider.setValue(20);QTest.mouseClick(slider,Qt.MouseButton.LeftButton,pos=QPoint(200,15))
-  self.assertTrue(50<=slider.value()<=52)
+  slider=NumericControl();slider.setRange(2,100);slider.show();app.processEvents()
+  slider.setFocus();QTest.keyClick(slider,Qt.Key.Key_A,Qt.KeyboardModifier.ControlModifier);QTest.keyClicks(slider,'76')
+  self.assertEqual(slider.value(),76)
   def wheel(delta):
    event=QWheelEvent(QPointF(200,15),QPointF(slider.mapToGlobal(QPoint(200,15))),QPoint(),QPoint(0,delta),Qt.MouseButton.NoButton,Qt.KeyboardModifier.ControlModifier,Qt.ScrollPhase.NoScrollPhase,False)
    QApplication.sendEvent(slider,event)
@@ -418,16 +416,15 @@ class Tests(unittest.TestCase):
    deadline=time.monotonic()+15
    while w.jobs and time.monotonic()<deadline:app.processEvents(); time.sleep(.001)
    w.region_event(('add',[.1,.1,.8,.8])); before=w.canvas.pixmap.toImage()
-   w.strength.setFocus(); w.strength.setSliderDown(True); w.strength.setSliderPosition(80)
+   w.strength.setFocus();QTest.keyClick(w.strength,Qt.Key.Key_A,Qt.KeyboardModifier.ControlModifier);QTest.keyClicks(w.strength,'80');QTest.keyClick(w.strength,Qt.Key.Key_Return)
    app.processEvents()
-   self.assertTrue(w.strength.isSliderDown())
    self.assertEqual(w.current()['regions'][0]['strength'],80)
    self.assertNotEqual(before,w.canvas.pixmap.toImage())
-   w.strength.setSliderDown(False)
-   QTest.keyClick(w.strength,Qt.Key.Key_Z,Qt.KeyboardModifier.ControlModifier); app.processEvents()
+   self.assertTrue(w.list.hasFocus())
+   QTest.keyClick(w.list,Qt.Key.Key_Z,Qt.KeyboardModifier.ControlModifier); app.processEvents()
    self.assertEqual(w.list.currentRow(),1)
    self.assertEqual(w.current()['regions'][0]['strength'],20)
-   QTest.keyClick(w.strength,Qt.Key.Key_Z,Qt.KeyboardModifier.ControlModifier); app.processEvents()
+   QTest.keyClick(w.list,Qt.Key.Key_Z,Qt.KeyboardModifier.ControlModifier); app.processEvents()
    self.assertFalse(w.current()['regions'])
    self.assertEqual(w.list.currentRow(),1)
    w.dirty=False; w.close()
@@ -1316,7 +1313,7 @@ class Tests(unittest.TestCase):
    w.region_event(('add',[.1,.1,.8,.8]));before=len(w.history)
    for i in range(100):
     w.tool.setCurrentIndex(i%3);w.brush_size.setValue(5+i%190);w.clone_softness.setValue(i%101)
-    w.strength.setSliderDown(True);w.strength.setSliderDown(False)
+    w.strength.setValue(w.strength.value())
    self.assertEqual(len(w.history),before)
    size=w.brush_size.value();tool=w.tool.currentIndex();w.undo()
    self.assertFalse(w.current()['regions']);self.assertEqual(w.brush_size.value(),size);self.assertEqual(w.tool.currentIndex(),tool)
