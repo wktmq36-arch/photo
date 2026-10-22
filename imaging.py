@@ -15,6 +15,9 @@ def edit_layers(entry):
         rect=crop.get('rect')
         if not isinstance(rect,list) or len(rect)!=4 or not all(isinstance(v,(int,float)) and math.isfinite(v) for v in rect) or not (0<=rect[0]<rect[2]<=1 and 0<=rect[1]<rect[3]<=1):
             raise ValueError('잘못된 자르기 범위')
+        if crop.get('mode','stretch') not in ('cover','stretch'):raise ValueError('잘못된 자르기 맞춤 방식')
+        anchor=crop.get('anchor',[.5,.5])
+        if not isinstance(anchor,list) or len(anchor)!=2 or not all(isinstance(v,(int,float)) and math.isfinite(v) and 0<=v<=1 for v in anchor):raise ValueError('잘못된 확대 구도')
         entry=crop['edits']
     raise ValueError('연속 자르기는 최대 63회까지 지원합니다.')
 
@@ -46,9 +49,22 @@ def stretch_crop(image,rect):
     # and no secondary aspect-ratio crop.
     return image.crop(crop_box(image,rect)).resize(image.size,Image.Resampling.LANCZOS)
 
+def cover_box(image,rect,anchor=(.5,.5)):
+    left,top,right,bottom=crop_box(image,rect);w,h=right-left,bottom-top
+    scale=max(image.width/w,image.height/h);visible_w,visible_h=image.width/scale,image.height/scale
+    x=left+(w-visible_w)*anchor[0];y=top+(h-visible_h)*anchor[1]
+    return (x,y,x+visible_w,y+visible_h)
+
+def cover_crop(image,rect,anchor=(.5,.5),size=None):
+    left,top,right,bottom=crop_box(image,rect);box=cover_box(image,rect,anchor)
+    selected=image.crop((left,top,right,bottom))
+    return selected.resize(size or image.size,Image.Resampling.LANCZOS,box=(box[0]-left,box[1]-top,box[2]-left,box[3]-top))
+
 def crop_base(image,entry):
     crop=entry.get('crop_source')
-    return stretch_crop(render_entry(image,crop['edits']),crop['rect']) if crop else image
+    if not crop:return image
+    source=render_entry(image,crop['edits'])
+    return stretch_crop(source,crop['rect']) if crop.get('mode','stretch')=='stretch' else cover_crop(source,crop['rect'],crop.get('anchor',[.5,.5]))
 
 def read_pixels(path):
     with Image.open(path) as source:

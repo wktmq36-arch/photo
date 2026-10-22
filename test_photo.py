@@ -6,6 +6,46 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_crop_cover_preserves_proportions_and_never_samples_trimmed_white(self):
+  from PIL import ImageOps
+  from imaging import cover_crop,cover_box,render_entry,stretch_crop
+  image=Image.new('RGBA',(200,300),'white');image.paste('red',(0,50,50,250));image.paste('green',(50,50,150,250));image.paste('blue',(150,50,200,250))
+  rect=[0.,1/6,1.,5/6]
+  for anchor in ([0.,.5],[.5,.5],[1.,.5]):
+   result=cover_crop(image,rect,anchor);expected=ImageOps.fit(image.crop((0,50,200,250)),(200,300),Image.Resampling.LANCZOS,centering=tuple(anchor))
+   self.assertEqual(result.size,image.size);self.assertEqual(result.tobytes(),expected.tobytes());self.assertNotIn((255,255,255,255),result.getdata())
+   box=cover_box(image,rect,anchor);self.assertAlmostEqual((box[2]-box[0])/(box[3]-box[1]),200/300)
+  old_entry={'regions':[],'crop_source':{'rect':rect,'edits':{'regions':[]}}}
+  self.assertEqual(render_entry(image,old_entry).tobytes(),stretch_crop(image,rect).tobytes())
+  self.assertNotEqual(cover_crop(image,rect,[0.,.5]).tobytes(),cover_crop(image,rect,[1.,.5]).tobytes())
+ def test_crop_cover_drag_reopens_last_crop_without_recropping(self):
+  from imaging import read_pixels,cover_crop,render_entry,edit_layers
+  from PySide6.QtCore import Qt,QPoint
+  from PySide6.QtTest import QTest
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'source.png';image=Image.new('RGB',(200,300),'white');image.paste('red',(0,50,50,250));image.paste('green',(50,50,150,250));image.paste('blue',(150,50,200,250));image.save(path)
+   w=Window();w.show();w.add_paths([str(path)]);app.processEvents();editor=w.start_crop_mode()
+   editor.trims['top'].setValue(50);editor.trims['bottom'].setValue(50);editor.result_check.setChecked(True);app.processEvents()
+   center=editor.preview.target.center().toPoint();QTest.mousePress(editor.preview,Qt.MouseButton.LeftButton,pos=center)
+   QTest.mouseMove(editor.preview,center+QPoint(120,0));QTest.mouseRelease(editor.preview,Qt.MouseButton.LeftButton,pos=center+QPoint(120,0))
+   self.assertLess(editor.anchor[0],.5);self.assertEqual(editor.anchor[1],.5);anchor=editor.anchor[:];editor.refresh_preview()
+   editor.accepted.emit();self.assertEqual(w.current()['crop_source']['mode'],'cover');self.assertEqual(w.current()['crop_source']['anchor'],anchor)
+   raw=read_pixels(path);rect=[0.,1/6,1.,5/6];self.assertEqual(render_entry(raw,w.current()).tobytes(),cover_crop(raw,rect,anchor).tobytes())
+   editor=w.start_crop_mode();self.assertTrue(editor.replacing);self.assertEqual(editor.rect(),rect);self.assertFalse(editor.has_changes())
+   editor.center_frame();editor.accepted.emit();self.assertEqual(len(list(edit_layers(w.current()))),2)
+   self.assertEqual(render_entry(raw,w.current()).tobytes(),cover_crop(raw,rect).tobytes())
+   w.undo();self.assertEqual(w.current()['crop_source']['anchor'],anchor);w.redo();self.assertEqual(w.current()['crop_source']['anchor'],[.5,.5])
+   saved=str(Path(d)/'cover.photo.json');w.write_project(saved);self.assertTrue(w.open_project(saved));output=Path(d)/'cover.png';export_image(w.current(),output,'PNG')
+   with Image.open(output) as exported:self.assertEqual(exported.convert('RGBA').tobytes(),cover_crop(raw,rect).tobytes())
+   # Old stretch records remain stable until the user reapplies the last crop.
+   w.current()['crop_source'].pop('mode');editor=w.start_crop_mode()
+   self.assertTrue(editor.replacing);self.assertTrue(editor.has_changes());editor.accepted.emit()
+   self.assertEqual(w.current()['crop_source']['mode'],'cover');self.assertEqual(len(list(edit_layers(w.current()))),2)
+   self.assertEqual(render_entry(raw,w.current()).tobytes(),cover_crop(raw,rect).tobytes())
+   deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close()
  def test_crop_stretches_all_kept_pixels_to_original_size_without_padding(self):
   from imaging import stretch_crop
   image=Image.new('RGBA',(200,300),'white')
@@ -17,18 +57,18 @@ class Tests(unittest.TestCase):
    self.assertEqual(result.getpixel((40,y)),(255,0,0,255));self.assertEqual(result.getpixel((160,y)),(0,0,255,255))
   self.assertNotIn((255,255,255,255),result.getdata())
  def test_crop_mode_trim_preview_apply_save_and_undo(self):
-  from imaging import read_pixels,render_entry
+  from imaging import read_pixels,render_entry,cover_crop
   from PySide6.QtCore import Qt
   from PySide6.QtTest import QTest
   app=QApplication.instance() or QApplication([])
   with tempfile.TemporaryDirectory() as d:
    path=Path(d)/'source.png';image=Image.new('RGB',(200,300),'white');image.paste('red',(0,50,50,250));image.paste('green',(50,50,150,250));image.paste('blue',(150,50,200,250));image.save(path)
-   original=path.read_bytes();expected=read_pixels(path).crop((0,50,200,250)).resize((200,300),Image.Resampling.LANCZOS)
+   original=path.read_bytes();expected=cover_crop(read_pixels(path),[0.,1/6,1.,5/6])
    w=Window();w.show();w.add_paths([str(path)]);app.processEvents();editor=w.start_crop_mode()
    self.assertFalse(editor.isWindow());self.assertIs(w.editor_stack.currentWidget(),editor)
    editor.trims['top'].setValue(50);editor.trims['bottom'].setValue(50);editor.result_check.setChecked(True)
-   self.assertEqual(editor.preview.pixmap.size().width(),200);self.assertEqual(editor.preview.pixmap.toImage().pixelColor(40,0).getRgb(),(255,0,0,255))
-   self.assertEqual(editor.preview.pixmap.toImage().pixelColor(160,299).getRgb(),(0,0,255,255))
+   self.assertEqual(editor.preview.pixmap.size().width(),200);self.assertEqual(editor.preview.pixmap.toImage().pixelColor(40,0).getRgb(),expected.getpixel((40,0)))
+   self.assertEqual(editor.preview.pixmap.toImage().pixelColor(160,299).getRgb(),expected.getpixel((160,299)))
    editor.accepted.emit();self.assertIsNone(w.crop_editor);self.assertIn('crop_source',w.current())
    self.assertEqual(render_entry(read_pixels(path),w.current()).tobytes(),expected.tobytes());self.assertEqual(path.read_bytes(),original)
    w.undo();self.assertNotIn('crop_source',w.current());w.redo();self.assertIn('crop_source',w.current())
@@ -46,11 +86,11 @@ class Tests(unittest.TestCase):
    path=Path(d)/'source.png';Image.effect_noise((240,320),100).convert('RGB').save(path)
    w=Window();w.add_paths([str(path)]);region={'rect':[.1,.2,.9,.8],'strength':50};w.current()['regions']=[region]
    original=copy.deepcopy(w.current());raw=read_pixels(path);rect=[0.,.15,1.,.85]
-   expected=stretch_crop(render_entry(raw,original),rect);w.apply_crop(rect)
+   expected=stretch_crop(render_entry(raw,original),rect);w.apply_crop(rect,mode='stretch')
    self.assertEqual(render_entry(raw,w.current()).tobytes(),expected.tobytes());self.assertEqual(len(all_regions(w.current())),1)
    w.apply_batch_strength([w.current()['id']],8);original['regions'][0]['strength']=8
    self.assertEqual(all_regions(w.current())[0]['strength'],8);self.assertEqual(render_entry(raw,w.current()).tobytes(),stretch_crop(render_entry(raw,original),rect).tobytes())
-   second=[.1,.1,.9,.9];previous=render_entry(raw,w.current());w.apply_crop(second)
+   second=[.1,.1,.9,.9];previous=render_entry(raw,w.current());w.apply_crop(second,mode='stretch')
    self.assertEqual(render_entry(raw,w.current()).tobytes(),stretch_crop(previous,second).tobytes())
    from cut_editor import CutEditor
    from composition import decode_asset

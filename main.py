@@ -410,7 +410,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.49'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.50'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -1018,20 +1018,21 @@ class Window(QMainWindow):
             self.tool_controls.setEnabled(False);self.crop_mode_button.setText('자르기 적용');self.update_history_controls()
             return editor
         except Exception as exc:QMessageBox.warning(self,'사진 자르기 실패',str(exc))
-    def apply_crop(self,rect):
+    def apply_crop(self,rect,anchor=None,replace=False,mode='cover'):
         entry=self.current()
-        if not entry or rect==[0.,0.,1.,1.]:return
-        if len(list(edit_layers(entry)))>=64:raise ValueError('연속 자르기는 최대 63회까지 지원합니다.')
-        source=copy.deepcopy({key:entry[key] for key in ('regions','clones','composition','crop_source') if key in entry})
-        pending={'regions':[],'clones':[],'crop_source':{'rect':list(rect),'edits':source}}
-        validate_edits(pending);self.snapshot('사진 자르기 · 원래 해상도로 늘리기')
+        if not entry or (rect==[0.,0.,1.,1.] and not replace):return
+        if not replace and len(list(edit_layers(entry)))>=64:raise ValueError('연속 자르기는 최대 63회까지 지원합니다.')
+        source=copy.deepcopy(entry['crop_source']['edits'] if replace else {key:entry[key] for key in ('regions','clones','composition','crop_source') if key in entry})
+        pending={'regions':[],'clones':[],'crop_source':{'rect':list(rect),'edits':source,'mode':mode,'anchor':list(anchor or [.5,.5])}}
+        validate_edits(pending);self.snapshot('사진 자르기 · 비율 유지 확대')
         entry.update(pending);entry.pop('composition',None)
         self.canvas.active=-1;self.clone_cache_key=None;self.composition_cache_key=None;self.original.setChecked(False)
-        self.render();self.renumber();self.status.setText('선택 부분 전체를 원래 가로×세로 크기로 늘렸습니다. Ctrl+Z로 취소')
+        self.render();self.renumber();self.status.setText('원래 해상도에 맞춰 비율을 유지해 확대했습니다. Ctrl+Z로 취소')
     def finish_crop_mode(self,apply=True):
         editor=self.crop_editor
         if editor is None:return
-        if apply and editor.has_changes():self.apply_crop(editor.rect())
+        if apply and editor.has_changes():self.apply_crop(editor.rect(),editor.anchor,editor.replacing)
+        editor.preview_timer.stop()
         self.crop_editor=None;self.editor_stack.setCurrentWidget(self.splitter);self.editor_stack.removeWidget(editor);editor.deleteLater()
         for action in self.navigation_actions:action.setEnabled(True)
         self.tool_controls.setEnabled(True);self.crop_mode_button.setText('사진 자르기');self.update_history_controls();self.render();self.list.setFocus()
@@ -1388,8 +1389,9 @@ if __name__=='__main__':
         window.main_only.setChecked(True);assert window.visible_rows()==[0,3]
         window.main_only.setChecked(False);assert [entry['path'] for entry in window.ordered()]==smoke_order
         crop=window.start_crop_mode();assert not crop.isWindow()
-        crop.trims['top'].setValue(5);crop.trims['bottom'].setValue(5);crop.result_check.setChecked(True);crop.accepted.emit()
+        crop.trims['top'].setValue(5);crop.trims['bottom'].setValue(5);crop.result_check.setChecked(True);crop.reframe([.1,0.]);crop.accepted.emit()
         assert window.crop_editor is None and window.current().get('crop_source')
+        assert window.current()['crop_source']['mode']=='cover' and window.current()['crop_source']['anchor'][0]<.5
         assert render_entry(read_pixels(window.current()['path']),window.current()).size==(80,60)
         for index,entry in enumerate(window.ordered()):
             export_image(entry,Path(smoke_folder.name)/f'output{index}.png','PNG')
