@@ -6,6 +6,32 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_export_folder_name_is_per_project_and_survives_restart(self):
+  import json
+  from unittest.mock import patch
+  from PySide6.QtCore import Qt
+  from PySide6.QtTest import QTest
+  from PySide6.QtWidgets import QMessageBox
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   first=str(Path(d)/'first.photo.json');second=str(Path(d)/'second.photo.json');copy=str(Path(d)/'copy.photo.json')
+   w=Window();w.show();w.settings.setValue('export/name','old-global-name')
+   def enter_name(value):
+    w.export_name.setFocus();QTest.keyClick(w.export_name,Qt.Key.Key_A,Qt.KeyboardModifier.ControlModifier);QTest.keyClicks(w.export_name,value)
+   enter_name('alpha');self.assertTrue(w.dirty);self.assertFalse(w.history);self.assertTrue(w.write_project(first))
+   self.assertTrue(w.new_project());self.assertEqual(w.export_name.text(),'a')
+   enter_name('beta');w.write_project(second);self.assertTrue(w.open_project(first));self.assertEqual(w.export_name.text(),'alpha')
+   self.assertTrue(w.open_project(second));self.assertEqual(w.export_name.text(),'beta')
+   enter_name('edited-beta')
+   with patch('main.QMessageBox.exec',return_value=QMessageBox.StandardButton.Cancel):self.assertFalse(w.open_project(first))
+   self.assertEqual(w.project,second);self.assertEqual(w.export_name.text(),'edited-beta')
+   w.write_project(copy);enter_name('gamma');w.save_project()
+   self.assertTrue(w.open_project(second));self.assertEqual(w.export_name.text(),'beta')
+   self.assertTrue(w.open_project(copy));self.assertEqual(w.export_name.text(),'gamma');w.close()
+   reopened=Window();self.assertEqual(reopened.export_name.text(),'a');self.assertTrue(reopened.restore_last_project());self.assertEqual(reopened.export_name.text(),'gamma')
+   legacy=Path(d)/'legacy.photo.json';legacy.write_text(json.dumps({'version':1,'images':[]}),encoding='utf-8')
+   self.assertTrue(reopened.open_project(str(legacy)));self.assertEqual(reopened.export_name.text(),'a');reopened.close()
+   self.assertEqual(json.loads(Path(first).read_text(encoding='utf-8'))['export']['name'],'alpha')
  def test_crop_cover_preserves_proportions_and_never_samples_trimmed_white(self):
   from PIL import ImageOps
   from imaging import cover_crop,cover_box,render_entry,stretch_crop
@@ -892,7 +918,7 @@ class Tests(unittest.TestCase):
    self.assertEqual(next_window.export_folder,d)
    self.assertFalse(next_window.output_checks['cen'].isChecked())
    self.assertTrue(next_window.output_checks['uncen'].isChecked())
-   self.assertEqual(next_window.export_name.text(),'second')
+   self.assertEqual(next_window.export_name.text(),'a')
    next_window.close()
  def test_replacing_output_protects_sources_and_parent(self):
   from exporting import prepare_output

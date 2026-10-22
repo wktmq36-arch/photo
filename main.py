@@ -410,7 +410,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.50'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.51'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -465,7 +465,8 @@ class Window(QMainWindow):
         self.export_folder_label.setMaximumWidth(180);self.export_folder_label.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Preferred);top.addWidget(self.export_folder_label)
         top.setStretchFactor(self.export_folder_label,1)
         export_controls.addWidget(QLabel('폴더 이름'))
-        self.export_name=QLineEdit(str(self.settings.value('export/name','a')));self.export_name.setMinimumWidth(90);self.export_name.setMaximumWidth(150);export_controls.addWidget(self.export_name)
+        self.export_name=QLineEdit('a');self.export_name.setMinimumWidth(90);self.export_name.setMaximumWidth(150);export_controls.addWidget(self.export_name)
+        self.export_name.textEdited.connect(lambda:self.mark_export_name_changed())
         self.output_checks={}
         for key,label in [('cen','처리본'),('uncen','원본용'),('main','메인용')]:
             check=QCheckBox(label);check.setChecked(self.settings.value('export/'+key,True,type=bool))
@@ -1156,6 +1157,8 @@ class Window(QMainWindow):
     def save_project(self):
         if self.project:return self.write_project(self.project)
         return self.save_project_as()
+    def mark_export_name_changed(self):
+        self.dirty=True
     def new_project(self):
         if self.busy:
             QMessageBox.information(self,'내보내기 중','내보내기가 끝난 후 새 작업을 시작하세요.');return False
@@ -1166,6 +1169,7 @@ class Window(QMainWindow):
         self.clone_cache_key=None;self.composition_cache_key=None;self.cut_clipboard=None
         self.populate([]);self.history=[];self.history_labels=[];self.redo_stack=[];self.snapshot_cache={}
         self.project=None;self.dirty=False;self.update_history_controls();self.refresh_recent_projects()
+        self.export_name.setText('a')
         self.settings.setValue('session/lastProject','');self.settings.remove('session/lastView');self.settings.sync()
         self.status.setText('새 작업 · 그림을 추가하세요.');return True
     def restore_last_project(self):
@@ -1201,7 +1205,7 @@ class Window(QMainWindow):
         try:
             entry=self.current()
             view={'current_id':entry['id'] if entry else None,'scroll':self.list.verticalScrollBar().value()}
-            temp=Path(path+'.tmp'); temp.write_text(json.dumps({'version':1,'images':self.ordered(),'view':view},ensure_ascii=False,indent=2),encoding='utf-8'); temp.replace(path)
+            temp=Path(path+'.tmp'); temp.write_text(json.dumps({'version':1,'images':self.ordered(),'view':view,'export':{'name':self.export_name.text()}},ensure_ascii=False,indent=2),encoding='utf-8'); temp.replace(path)
             self.project=str(Path(path).resolve()); self.dirty=False;self.remember_project(self.project)
             self.settings.setValue('session/lastProject',self.project);self.settings.remove('session/lastView');self.settings.sync()
             self.status.setText('작업 저장 완료');return True
@@ -1228,6 +1232,8 @@ class Window(QMainWindow):
         try:
             data=json.loads(Path(path).read_text(encoding='utf-8')); entries=data['images']
             if data.get('version')!=1:raise ValueError('지원하지 않는 작업 파일입니다.')
+            export_settings=data.get('export',{})
+            if not isinstance(export_settings,dict) or not isinstance(export_settings.get('name','a'),str):raise ValueError('잘못된 출력 폴더 이름')
             for e in entries:
                 if not isinstance(e.get('main_selected',False),bool):raise ValueError('잘못된 메인 선택 상태')
                 if not isinstance(e['path'],str) or not isinstance(e['regions'],list):raise ValueError('잘못된 작업 파일')
@@ -1236,6 +1242,7 @@ class Window(QMainWindow):
             self.finish_cut_mode(False)
             self.populate(entries); self.history=[]; self.history_labels=[]; self.redo_stack=[];self.snapshot_cache={};self.update_history_controls(); self.project=str(Path(path).resolve()); self.dirty=False
             self.restore_project_view(data.get('view',{}))
+            self.export_name.setText(export_settings.get('name','a'))
             self.settings.setValue('session/lastProject',self.project);self.settings.remove('session/lastView');self.settings.sync()
             self.remember_project(self.project);return True
         except Exception as exc:
@@ -1273,7 +1280,6 @@ class Window(QMainWindow):
         reserved={'CON','PRN','AUX','NUL'}|{f'COM{i}' for i in range(1,10)}|{f'LPT{i}' for i in range(1,10)}
         if stem.split('.')[0].upper() in reserved or any(ord(c)<32 for c in stem):
             QMessageBox.warning(self,'폴더 이름','사용할 수 없는 폴더 이름입니다.');return
-        self.settings.setValue('export/name',stem)
         try:
             destination=prepare_output(folder,stem,[entry['path'] for entry in self.entries.values()],self.confirm_output_replacement,outputs)
             if destination is None:
