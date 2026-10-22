@@ -60,10 +60,10 @@ def cover_crop(image,rect,anchor=(.5,.5),size=None):
     selected=image.crop((left,top,right,bottom))
     return selected.resize(size or image.size,Image.Resampling.LANCZOS,box=(box[0]-left,box[1]-top,box[2]-left,box[3]-top))
 
-def crop_base(image,entry):
+def crop_base(image,entry,include_mosaic=True):
     crop=entry.get('crop_source')
     if not crop:return image
-    source=render_entry(image,crop['edits'])
+    source=render_entry(image,crop['edits'],include_mosaic=include_mosaic)
     return stretch_crop(source,crop['rect']) if crop.get('mode','stretch')=='stretch' else cover_crop(source,crop['rect'],crop.get('anchor',[.5,.5]))
 
 def read_pixels(path):
@@ -195,14 +195,14 @@ class ClonePreview:
         self.result.paste(patch,box);self.count=len(points)
         return self.result
 
-def render_entry(image,entry):
+def render_entry(image,entry,include_mosaic=True):
     # Retouch first; censor last, so a clone can never undo a mosaic.
-    composed=render_composition(crop_base(image,entry),entry.get('composition'))
+    composed=render_composition(crop_base(image,entry,include_mosaic),entry.get('composition'),include_mosaic=include_mosaic)
     cloned=render_clones(composed,entry.get('clones',[]))
-    return render_regions(cloned,entry['regions']) if entry['regions'] else cloned
+    return render_regions(cloned,entry['regions']) if include_mosaic and entry['regions'] else cloned
 
-def export_image(entry, destination, fmt):
-    result = render_entry(read_pixels(entry['path']), entry)
+def export_image(entry, destination, fmt, include_mosaic=True):
+    result = render_entry(read_pixels(entry['path']), entry, include_mosaic=include_mosaic)
     clean = Image.frombytes('RGBA', result.size, result.tobytes())
     if fmt == 'JPEG':
         background = Image.new('RGB', clean.size, 'white')
@@ -210,6 +210,8 @@ def export_image(entry, destination, fmt):
         background.save(destination, 'JPEG', quality=95, subsampling=0)
     elif fmt == 'WEBP':
         clean.save(destination, 'WEBP', lossless=True)
+    elif fmt in ('BMP','TIFF'):
+        clean.save(destination,fmt)
     else:
         clean.save(destination, 'PNG')
     with Image.open(destination) as check:
@@ -300,7 +302,12 @@ def export_pair(entry, index, destination, fmt, stem, outputs=None, main_index=N
         path=folder/((number_override or number)+suffix);created.append(path);return path
     try:
         if outputs.get('uncen'):
-            strip_metadata(entry['path'],target('uncen',Path(entry['path']).suffix))
+            suffix=Path(entry['path']).suffix
+            original_output=target('uncen',suffix)
+            if any(entry.get(field) for field in ('crop_source','composition','clones')):
+                original_format={'.webp':'WEBP','.png':'PNG','.jpg':'JPEG','.jpeg':'JPEG','.bmp':'BMP','.tif':'TIFF','.tiff':'TIFF'}[suffix.lower()]
+                export_image(entry,original_output,original_format,include_mosaic=False)
+            else:strip_metadata(entry['path'],original_output)
         processed=None
         if outputs.get('cen'):
             processed=target('cen','.'+ext);export_image(entry,processed,fmt)

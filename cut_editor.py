@@ -5,7 +5,7 @@ from PySide6.QtGui import QPainter,QColor,QPen,QImage,QPixmap,QKeySequence,QShor
 from PySide6.QtWidgets import (QDialog,QWidget,QVBoxLayout,QHBoxLayout,QPushButton,QLabel,
     QListWidget,QListWidgetItem,QSplitter,QDialogButtonBox,QMessageBox,QSpinBox,QLineEdit,
     QAbstractItemView,QMenu,QCheckBox)
-from composition import empty_composition,pixel_asset,decode_asset,render_composition
+from composition import empty_composition,paired_asset,pixel_asset,decode_asset,render_composition
 from imaging import read_pixels,render_entry,render_clones,render_regions,crop_base
 
 
@@ -206,7 +206,7 @@ class CutEditor(QDialog):
         self.embedded=embedded
         if embedded:self.setWindowFlags(Qt.WindowType.Widget)
         available=self.screen().availableGeometry();self.resize(min(1420,available.width()-40),min(900,available.height()-60))
-        self.entry=entry;self.entries=entries;self.clipboard=clipboard;self.source_image=None;self.source_dirty=False
+        self.entry=entry;self.entries=entries;self.clipboard=clipboard;self.source_image=None;self.source_uncensored=None;self.source_dirty=False
         self.composition=copy.deepcopy(entry.get('composition') or empty_composition())
         self.history=[];self.redo_history=[];self.gesture=None;self.assets_cache={}
         self.raw=read_pixels(entry['path']);self.base=crop_base(self.raw,entry);self.preview=self.base.copy();self.preview.thumbnail((1600,1600))
@@ -280,7 +280,7 @@ class CutEditor(QDialog):
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.setInterval(16);self.timer.timeout.connect(self.refresh)
         self.sources.currentRowChanged.connect(self.load_source);self.source_canvas.selectionChanged.connect(self.source_selected)
         if clipboard:
-            self.source_image=decode_asset(clipboard[1]);self.source_canvas.set_image(self.preview_source(),True);self.source_title.setText('복사해 둔 그림 · 드래그해서 필요한 부분 선택')
+            self.source_image=decode_asset(clipboard[1]);self.source_uncensored=decode_asset(clipboard[2] if len(clipboard)>2 else clipboard[1]);self.source_canvas.set_image(self.preview_source(),True);self.source_title.setText('복사해 둔 그림 · 드래그해서 필요한 부분 선택')
         elif entries:self.sources.setCurrentRow(next((i for i,e in enumerate(entries) if e['id']==entry['id']),0))
         self.set_mode('frame' if entry.get('composition') else 'draw');self.refresh()
     def toggle_source(self,widget):
@@ -315,7 +315,8 @@ class CutEditor(QDialog):
         try:
             source=self.entries[row]
             if source['id']==self.entry['id']:source=dict(source,composition=self.composition)
-            self.source_image=render_entry(read_pixels(source['path']),source)
+            raw=read_pixels(source['path']);self.source_image=render_entry(raw,source)
+            self.source_uncensored=render_entry(raw,source,include_mosaic=False)
             self.source_canvas.selection=None;self.source_canvas.set_image(self.preview_source(),True)
             self.source_title.setText(Path(source['path']).name);self.source_selected(None)
         except Exception as exc:
@@ -335,7 +336,7 @@ class CutEditor(QDialog):
     def copy_selection(self):
         if self.source_image is None:return
         if self.source_dirty or self.clipboard is None:
-            self.clipboard=pixel_asset(self.source_image.crop(self.source_box()));self.source_dirty=False
+            self.clipboard=paired_asset(self.source_image.crop(self.source_box()),(self.source_uncensored if self.source_uncensored is not None else self.source_image).crop(self.source_box()));self.source_dirty=False
         self.info.setText('선택 부분 복사 완료 · 대상에 붙여넣으세요.')
     def copy_source(self):
         self.select_whole_source();self.copy_selection()
@@ -400,21 +401,26 @@ class CutEditor(QDialog):
         image=render_entry(self.raw,dict(self.entry,composition=self.composition))
         box=(round(rect[0]*image.width),round(rect[1]*image.height),round(rect[2]*image.width),round(rect[3]*image.height))
         if box[2]>box[0] and box[3]>box[1]:
-            self.clipboard=pixel_asset(image.crop(box));self.source_image=decode_asset(self.clipboard[1]);self.source_canvas.selection=None
+            uncensored=render_entry(self.raw,dict(self.entry,composition=self.composition),include_mosaic=False)
+            self.clipboard=paired_asset(image.crop(box),uncensored.crop(box));self.source_image=decode_asset(self.clipboard[1]);self.source_uncensored=decode_asset(self.clipboard[2]);self.source_canvas.selection=None
             self.source_canvas.set_image(self.preview_source(),True);self.source_dirty=False
         self.set_mode('move');self.refresh();self.canvas.setFocus()
+    def store_clipboard(self):
+        key,data=self.clipboard[:2];self.composition['assets'][key]=data
+        if len(self.clipboard)>2:self.composition.setdefault('uncensored_assets',{})[key]=self.clipboard[2]
+        return key
     def paste(self):
         self.copy_selection()
         if not self.clipboard:self.info.setText('먼저 왼쪽에서 가져올 그림을 선택하세요.');return
         self.record()
         if self.cell() is None:
             self.composition['cells'].append({'rect':[.1,.1,.9,.9]});self.canvas.active=len(self.composition['cells'])-1;self.composition['freeform']=True
-        key,data=self.clipboard;self.composition['assets'][key]=data;self.cell().update(asset=key,scale=1.,offset=[0.,0.])
+        key=self.store_clipboard();self.cell().update(asset=key,scale=1.,offset=[0.,0.])
         self.set_mode('move');self.refresh();self.canvas.setFocus()
     def fill_original_resolution(self):
         self.copy_selection()
         if not self.clipboard:self.info.setText('먼저 왼쪽에서 필요한 부분을 선택하세요.');return
-        self.record();key,data=self.clipboard;self.composition['assets'][key]=data
+        self.record();key=self.store_clipboard()
         # Keep earlier cuts editable underneath; this full-canvas cut is on top.
         if self.composition['cells']==[{'rect':[0.,0.,1.,1.]}]:self.composition['cells']=[]
         self.composition['cells'].append({'rect':[0.,0.,1.,1.],'asset':key,'scale':1.,'offset':[0.,0.],'stretch':True})
@@ -459,4 +465,6 @@ class CutEditor(QDialog):
         self.history.append(copy.deepcopy(self.composition));self.composition=self.redo_history.pop();self.refresh()
     def apply(self):
         self.finish_gesture();used={c['asset'] for c in self.composition['cells'] if 'asset' in c}
-        self.composition['assets']={k:v for k,v in self.composition['assets'].items() if k in used};self.accept()
+        self.composition['assets']={k:v for k,v in self.composition['assets'].items() if k in used}
+        if 'uncensored_assets' in self.composition:self.composition['uncensored_assets']={k:v for k,v in self.composition['uncensored_assets'].items() if k in used}
+        self.accept()

@@ -13,6 +13,12 @@ def pixel_asset(image):
     return hashlib.sha256(data).hexdigest(),base64.b64encode(data).decode('ascii')
 
 
+def paired_asset(image,uncensored):
+    key,data=pixel_asset(image);other_key,other_data=pixel_asset(uncensored)
+    # A censored image can be identical while its uncensored counterpart differs.
+    return hashlib.sha256((key+other_key).encode('ascii')).hexdigest(),data,other_data
+
+
 def decode_asset(data):
     with Image.open(io.BytesIO(base64.b64decode(data,validate=True))) as source:
         return source.convert('RGBA').copy()
@@ -34,6 +40,11 @@ def validate_composition(value,check_images=False):
     for key,data in value['assets'].items():
         if not isinstance(key,str) or not isinstance(data,str):raise ValueError('잘못된 컷 이미지')
         if check_images:decode_asset(data)
+    variants=value.get('uncensored_assets',{})
+    if not isinstance(variants,dict):raise ValueError('잘못된 원본용 컷 이미지')
+    for key,data in variants.items():
+        if key not in value['assets'] or not isinstance(data,str):raise ValueError('잘못된 원본용 컷 이미지')
+        if check_images and decode_asset(data).size!=decode_asset(value['assets'][key]).size:raise ValueError('원본용 컷 이미지 크기 불일치')
     for cell in value['cells']:
         if not isinstance(cell,dict):raise ValueError('잘못된 컷 데이터')
         rect=cell.get('rect')
@@ -55,7 +66,7 @@ def panel_border(image,box,border,inset=0):
     if rect[2]>=rect[0] and rect[3]>=rect[1]:ImageDraw.Draw(image).rectangle(rect,outline='black',width=border)
 
 
-def render_composition(image,composition,cache=None):
+def render_composition(image,composition,cache=None,include_mosaic=True):
     if not composition:return image
     result=image.convert('RGBA').copy();width,height=result.size
     cache={} if cache is None else cache
@@ -70,8 +81,10 @@ def render_composition(image,composition,cache=None):
                 if gap:ImageDraw.Draw(result).rectangle((box[0],box[1],max(box[0],box[2]-1),max(box[1],box[3]-1)),outline='white',width=gap)
             panel_border(result,box,round(cell.get('border',0.)*width),gap if composition.get('freeform') else (gap+1)//2)
             continue
-        if key not in cache:cache[key]=decode_asset(composition['assets'][key])
-        source=cache[key];x1,y1,x2,y2=cell['rect']
+        variant=not include_mosaic and key in composition.get('uncensored_assets',{})
+        cache_key=(key,'uncensored') if variant else key
+        if cache_key not in cache:cache[cache_key]=decode_asset(composition['uncensored_assets'][key] if variant else composition['assets'][key])
+        source=cache[cache_key];x1,y1,x2,y2=cell['rect']
         box=(round(x1*width),round(y1*height),round(x2*width),round(y2*height))
         cw,ch=box[2]-box[0],box[3]-box[1]
         if cw<=0 or ch<=0:continue

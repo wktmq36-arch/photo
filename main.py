@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, 
     QMessageBox, QSpinBox, QAbstractSpinBox, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu, QDockWidget, QToolButton, QButtonGroup, QStyle, QStackedWidget, QGridLayout, QSizePolicy)
 from exporting import prepare_output
 from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, render_clones, ClonePreview, export_image, export_pair, crop_base, edit_layers, all_regions, validate_edits
-from composition import pixel_asset,render_composition,validate_composition
+from composition import paired_asset,pixel_asset,render_composition,validate_composition
 
 def to_qimage(image):
     rgba = image if image.mode=='RGBA' else image.convert('RGBA')
@@ -412,7 +412,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.53'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.54'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -470,7 +470,7 @@ class Window(QMainWindow):
         self.export_name.textEdited.connect(lambda:self.mark_export_name_changed())
         self.output_checks={}
         for key,label in [('cen','처리본'),('uncen','원본용'),('main','메인용')]:
-            check=QCheckBox(label);check.setChecked(self.settings.value('export/'+key,True,type=bool))
+            check=QCheckBox(label);check.setToolTip('모자이크를 제외한 편집 적용 · 원본 확장자 유지 · 메타데이터 제거' if key=='uncen' else label);check.setChecked(self.settings.value('export/'+key,True,type=bool))
             check.toggled.connect(lambda value,k=key:self.settings.setValue('export/'+k,value))
             self.output_checks[key]=check;export_controls.addWidget(check)
         self.format=QComboBox(); self.format.addItems(['PNG','WEBP','JPEG']); export_controls.addWidget(self.format)
@@ -959,7 +959,8 @@ class Window(QMainWindow):
         entry=self.current()
         if not entry:return
         try:
-            self.cut_clipboard=pixel_asset(render_entry(read_pixels(entry['path']),entry))
+            raw=read_pixels(entry['path'])
+            self.cut_clipboard=paired_asset(render_entry(raw,entry),render_entry(raw,entry,include_mosaic=False))
             self.status.setText('모자이크 포함 그림 복사 완료 · 대상 썸네일을 선택하고 컷 편집을 여세요.')
         except Exception as exc:QMessageBox.warning(self,'컷 복사 실패',str(exc))
     def apply_composition(self,composition):
@@ -1322,7 +1323,7 @@ class Window(QMainWindow):
             self.busy=False; self.export_button.setEnabled(True); self.progress.hide()
             message=f'{self.exported_files}개 파일 저장 완료\n{destination}'
             if outputs['cen']:message+=f'\n{stem}_cen: 모자이크 처리본'
-            if outputs['uncen']:message+=f'\n{stem}_uncen: 원본용 · 메타데이터만 제거'
+            if outputs['uncen']:message+=f'\n{stem}_uncen: 원본용 · 편집 적용 / 모자이크 제외 / 메타데이터 제거'
             if self.exported_main:message+=f'\n{stem}_main: 메인 게시용 {self.exported_main}장'
             message+='\n출력 파일 메타데이터 제거 검증 완료'
             if self.errors:message+='\n\n실패:\n'+'\n'.join(self.errors[:10])

@@ -6,6 +6,47 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_uncensored_export_keeps_nested_crop_clone_and_panel_edits(self):
+  import copy
+  from imaging import render_entry,export_pair,edit_layers,read_pixels
+  from composition import pixel_asset
+  with tempfile.TemporaryDirectory() as d:
+   d=Path(d);source=d/'source.webp'
+   raw=Image.effect_noise((120,90),100).convert('RGBA');exif=Image.Exif();exif[270]='secret';raw.save(source,lossless=True,exif=exif)
+   key,data=pixel_asset(Image.new('RGBA',(30,30),'red'))
+   region={'rect':[0.,0.,1.,1.],'strength':20}
+   composition={'assets':{key:data},'cells':[{'rect':[0.,0.,.3,.3],'asset':key,'border':.02}]}
+   stroke={'source':[.15,.5],'points':[[.7,.5]],'radius':.05,'softness':0}
+   entry={'path':str(source),'regions':[region],'clones':[stroke],'composition':composition,'main_selected':True,
+          'crop_source':{'rect':[0.,.1,1.,.9],'mode':'cover','anchor':[.2,.5],'edits':{'regions':[region],'clones':[stroke]}}}
+   original=copy.deepcopy(entry);no_masks=copy.deepcopy(entry)
+   for layer in edit_layers(no_masks):layer['regions']=[]
+   expected=render_entry(read_pixels(source),no_masks)
+   self.assertEqual(render_entry(read_pixels(source),entry,include_mosaic=False).tobytes(),expected.tobytes())
+   export_pair(entry,3,d,'PNG','a',main_index=1)
+   with Image.open(d/'a_uncen/003.webp') as output:
+    self.assertEqual(output.convert('RGBA').tobytes(),expected.tobytes());self.assertFalse(output.getexif());self.assertNotIn('xmp',output.info)
+   with Image.open(d/'a_cen/003.png') as output:self.assertNotEqual(output.tobytes(),expected.tobytes())
+   self.assertEqual(entry,original)
+ def test_copied_panel_retains_uncensored_variant_through_project_save(self):
+  from cut_editor import CutEditor
+  from composition import render_composition,validate_composition
+  from imaging import render_entry,read_pixels
+  import json
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   source=Path(d)/'source.png';Image.effect_noise((100,100),100).convert('RGBA').save(source)
+   entry={'id':'source','path':str(source),'regions':[{'rect':[0.,0.,1.,1.],'strength':50}]}
+   from PySide6.QtGui import QIcon
+   editor=CutEditor(entry,[entry],[QIcon()]);editor.copy_source();self.assertEqual(len(editor.clipboard),3)
+   editor.paste();composition=editor.composition;validate_composition(composition,check_images=True)
+   raw=read_pixels(source);base=Image.new('RGBA',raw.size,'white')
+   censored=render_composition(base,composition);uncensored=render_composition(base,composition,include_mosaic=False)
+   self.assertEqual(uncensored.tobytes(),raw.tobytes());self.assertEqual(censored.tobytes(),render_entry(raw,entry).tobytes())
+   editor.reject()
+   w=Window();w.populate([dict(entry,composition=composition)]);project=Path(d)/'test.photo.json';w.write_project(str(project));w.close()
+   w=Window();self.assertTrue(w.open_project(str(project)));saved=w.current()['composition'];validate_composition(saved,True)
+   self.assertEqual(render_composition(base,saved,include_mosaic=False).tobytes(),raw.tobytes());w.close()
  def test_recent_projects_sort_by_name_and_show_saved_time(self):
   from datetime import datetime
   from PySide6.QtCore import Qt
@@ -469,7 +510,7 @@ class Tests(unittest.TestCase):
    w.current()['regions']=[{'rect':[0.,0.,1.,1.],'strength':100}]
    from imaging import read_pixels
    expected=render_entry(read_pixels(source),w.current())
-   w.copy_for_cut();key,data=w.cut_clipboard;self.assertEqual(decode_asset(data).tobytes(),expected.tobytes());self.assertFalse(decode_asset(data).info)
+   w.copy_for_cut();key,data=w.cut_clipboard[:2];self.assertEqual(decode_asset(data).tobytes(),expected.tobytes());self.assertFalse(decode_asset(data).info)
    w.list.setCurrentRow(1);composition={'assets':{key:data},'cells':[{'rect':[0.,0.,1.,1.],'asset':key,'scale':1.,'offset':[0.,0.]}]}
    w.apply_composition(composition);self.assertIn('composition',w.current());w.undo();self.assertNotIn('composition',w.current());w.redo()
    saved=str(Path(d)/'cuts.photo.json');w.write_project(saved)
@@ -1029,7 +1070,7 @@ class Tests(unittest.TestCase):
    self.assertEqual(result.getpixel((280,150)),(255,0,0,255));self.assertEqual(result.getpixel((280,250)),(0,0,255,255))
    export_pair(entry,1,d,'PNG','a',main_index=1)
    with Image.open(Path(d)/'a_cen/001.png') as processed:self.assertEqual(processed.getpixel((280,150))[:3],(255,0,0))
-   with Image.open(Path(d)/'a_uncen/001.webp') as original:self.assertEqual(original.getpixel((280,150))[:3],(0,0,255))
+   with Image.open(Path(d)/'a_uncen/001.webp') as original:self.assertEqual(original.getpixel((280,150))[:3],(255,0,0))
    self.assertEqual((Path(d)/'a_cen/001.png').read_bytes(),(Path(d)/'a_main/001.png').read_bytes())
  def test_clone_mouse_gesture_save_and_undo(self):
   from unittest.mock import patch
