@@ -6,6 +6,21 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_recent_projects_sort_by_name_and_show_saved_time(self):
+  from datetime import datetime
+  from PySide6.QtCore import Qt
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   a=Path(d)/'Alpha.photo.json';z=Path(d)/'Zulu.photo.json'
+   a.write_text('{}');z.write_text('{}');stamp=1700000000;os.utime(a,(stamp,stamp))
+   w=Window();w.recent_projects=[];w.remember_project(a);w.remember_project(z)
+   self.assertEqual(w.history_list.item(0).data(Qt.ItemDataRole.UserRole),str(a))
+   self.assertEqual(w.history_list.item(1).data(Qt.ItemDataRole.UserRole),str(z))
+   self.assertIn(datetime.fromtimestamp(stamp).strftime('%Y-%m-%d %H:%M'),w.history_list.item(0).text())
+   w.remember_project(a)
+   self.assertEqual(w.history_list.item(0).data(Qt.ItemDataRole.UserRole),str(a))
+   self.assertEqual(a.stat().st_mtime,stamp)
+   z.unlink();w.refresh_recent_projects();self.assertIn('파일 없음',w.history_list.item(1).text());w.close()
  def test_rename_project_moves_current_file_and_updates_recent_and_session(self):
   import json
   from unittest.mock import patch
@@ -1292,7 +1307,7 @@ class Tests(unittest.TestCase):
    self.assertEqual(w.recent_projects,[second,first])
    deadline=time.monotonic()+10
    while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
-   item=w.history_list.item(1)
+   item=w.history_list.item(0)
    QTest.mouseClick(w.history_list.viewport(),Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,w.history_list.visualItemRect(item).center());app.processEvents()
    self.assertEqual(w.project,first);self.assertEqual(w.current()['path'],sources[0])
    w.main_check.setChecked(True)

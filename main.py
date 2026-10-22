@@ -1,4 +1,6 @@
 import sys, json, uuid, copy, time
+from datetime import datetime
+from ui_theme import apply_theme, action_icon
 from pathlib import Path
 from collections import OrderedDict
 from PySide6.QtCore import Qt, QSize, QRect, QRectF, QPointF, Signal, QObject, QRunnable, QThreadPool, QTimer, QMimeData, QItemSelectionModel, QSettings, QEvent
@@ -51,11 +53,11 @@ class ToolPicker(QWidget):
         super().__init__(parent);self.index=0;self.buttons=[];self.group=QButtonGroup(self);self.group.setExclusive(True)
         layout=QHBoxLayout(self);layout.setContentsMargins(0,0,0,0);layout.setSpacing(5)
         for index,label in enumerate(['박스 모자이크','브러시 모자이크','복제 도장 (Alt+클릭으로 기준점)']):
-            button=QToolButton();button.setIcon(tool_icon(index));button.setIconSize(QSize(28,28));button.setCheckable(True)
+            button=QToolButton();button.setIcon(tool_icon(index));button.setIconSize(QSize(23,23));button.setCheckable(True)
             button.setToolTip(label);button.setAccessibleName(label);button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            button.setFixedSize(42,40);self.group.addButton(button,index);layout.addWidget(button);self.buttons.append(button)
+            button.setFixedSize(32,30);self.group.addButton(button,index);layout.addWidget(button);self.buttons.append(button)
         self.buttons[0].setChecked(True)
-        self.setStyleSheet('QToolButton {border:1px solid #aab8c8;border-radius:5px;background:#edf2f7;} QToolButton:hover {background:#d9eaff;} QToolButton:checked {border:2px solid #287fce;background:#bbddff;}')
+        self.setObjectName('toolPicker')
         self.group.idClicked.connect(self.choose)
     def choose(self,index):
         self.setCurrentIndex(index);self.activated.emit()
@@ -410,7 +412,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.52'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.53'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -431,29 +433,28 @@ class Window(QMainWindow):
         self.export_pool=QThreadPool(self); self.export_pool.setMaxThreadCount(1)
         self.jobs=set(); self.errors=[]; self.busy=False
         root=QWidget(); self.setCentralWidget(root); layout=QVBoxLayout(root);layout.setContentsMargins(4,4,4,4);layout.setSpacing(4)
-        self.header=QWidget();self.header_grid=QGridLayout(self.header);self.header_grid.setContentsMargins(0,0,0,0);self.header_grid.setSpacing(4)
+        self.header=QWidget();self.header.setObjectName("header");self.header_grid=QGridLayout(self.header);self.header_grid.setContentsMargins(0,0,0,0);self.header_grid.setSpacing(4)
         self.header.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Preferred);self.header_grid.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         layout.addWidget(self.header);self.header_stacked=None
         self.action_controls=QWidget();top=QHBoxLayout(self.action_controls);top.setContentsMargins(0,0,0,0);top.setSpacing(4)
         self.header_grid.addWidget(self.action_controls,0,0,1,2)
         for label,fn in [('새 작업',self.new_project),('파일 추가',self.add_dialog),('폴더 추가',self.folder_dialog),('작업 열기',self.load_project),('작업 저장',self.save_project),('다른 이름으로 저장',self.save_project_as),('실행 취소',self.undo),('다시 실행',self.redo),('목록에서 제외',self.remove_selected)]:
             button=QPushButton(label); button.clicked.connect(fn); top.addWidget(button)
-            icons={'새 작업':QStyle.StandardPixmap.SP_FileIcon,'파일 추가':QStyle.StandardPixmap.SP_FileIcon,'폴더 추가':QStyle.StandardPixmap.SP_DirIcon,
-                   '작업 열기':QStyle.StandardPixmap.SP_DialogOpenButton,'작업 저장':QStyle.StandardPixmap.SP_DialogSaveButton,
-                   '다른 이름으로 저장':QStyle.StandardPixmap.SP_DialogSaveButton,'목록에서 제외':QStyle.StandardPixmap.SP_TrashIcon}
-            if label in icons:button.setIcon(self.style().standardIcon(icons[label]));button.setIconSize(QSize(16,16))
+            icons={'새 작업':'file','파일 추가':'file','폴더 추가':'folder','작업 열기':'folder',
+                   '작업 저장':'save','다른 이름으로 저장':'save','목록에서 제외':'trash','실행 취소':'undo','다시 실행':'redo'}
+            button.setIcon(action_icon(icons[label]));button.setIconSize(QSize(16,16))
             if label=='실행 취소':self.undo_button=button
             elif label=='다시 실행':self.redo_button=button
         self.history_dock=QDockWidget('저장한 작업',self);self.history_dock.setObjectName('photoHistoryDock')
         self.history_dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea|Qt.DockWidgetArea.RightDockWidgetArea)
         history_body=QWidget();history_layout=QVBoxLayout(history_body)
         self.history_summary=QLabel('저장한 작업 0개');history_layout.addWidget(self.history_summary)
-        self.history_list=QListWidget();self.history_list.setMinimumWidth(170);history_layout.addWidget(self.history_list)
+        self.history_list=QListWidget();self.history_list.setObjectName('projectList');self.history_list.setMinimumWidth(220);history_layout.addWidget(self.history_list)
         self.history_list.itemClicked.connect(self.open_recent_project)
         add_project_button=QPushButton('작업 파일 추가');add_project_button.clicked.connect(self.add_project_files);history_layout.addWidget(add_project_button)
         find_projects_button=QPushButton('폴더에서 작업 찾기');find_projects_button.clicked.connect(self.find_projects);history_layout.addWidget(find_projects_button)
         self.history_dock.setWidget(history_body);self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,self.history_dock)
-        self.resizeDocks([self.history_dock],[210],Qt.Orientation.Horizontal)
+        self.resizeDocks([self.history_dock],[290],Qt.Orientation.Horizontal)
         history_toggle=QPushButton('저장한 작업');history_toggle.setCheckable(True);history_toggle.setChecked(True)
         history_toggle.toggled.connect(self.history_dock.setVisible);self.history_dock.visibilityChanged.connect(history_toggle.setChecked)
         top.addWidget(history_toggle);self.history_toggle=history_toggle
@@ -473,7 +474,7 @@ class Window(QMainWindow):
             check.toggled.connect(lambda value,k=key:self.settings.setValue('export/'+k,value))
             self.output_checks[key]=check;export_controls.addWidget(check)
         self.format=QComboBox(); self.format.addItems(['PNG','WEBP','JPEG']); export_controls.addWidget(self.format)
-        self.export_button=QPushButton('순서대로 내보내기'); self.export_button.clicked.connect(self.export); export_controls.addWidget(self.export_button)
+        self.export_button=QPushButton('내보내기');self.export_button.setObjectName('primaryButton'); self.export_button.clicked.connect(self.export); export_controls.addWidget(self.export_button)
         self.mode_controls=QWidget();mode_bar=QHBoxLayout(self.mode_controls);mode_bar.setContentsMargins(0,0,0,0);mode_bar.setSpacing(4)
         self.cut_mode_button=QPushButton('컷 편집 모드');self.cut_mode_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.cut_mode_button.clicked.connect(self.toggle_cut_mode);mode_bar.addWidget(self.cut_mode_button)
@@ -493,14 +494,14 @@ class Window(QMainWindow):
         self.main_only=QCheckBox('메인만 보기');self.main_only.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.main_only.toggled.connect(self.apply_main_filter);thumbnail_header.addWidget(self.main_only)
         thumbnail_header.addStretch();self.selection_count=QLabel('선택 0장');thumbnail_header.addWidget(self.selection_count)
-        self.list=ImageList(); ll.addWidget(self.list); splitter.addWidget(left)
+        self.list=ImageList();self.list.setObjectName('thumbnailList'); ll.addWidget(self.list); splitter.addWidget(left)
         self.list.itemSelectionChanged.connect(self.update_selection_count)
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self.thumbnail_context_menu)
         left.setMinimumWidth(180)
         right=QWidget(); right.setMinimumWidth(460); rl=QVBoxLayout(right)
         rl.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
-        self.title=QLabel('그림을 선택하세요'); rl.addWidget(self.title)
+        self.title=QLabel('그림을 선택하세요');self.title.setObjectName('imageTitle'); rl.addWidget(self.title)
         self.main_check=QCheckBox('메인 게시용으로 선택 · 별도 폴더에도 저장')
         self.main_check.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.main_check.setEnabled(False); self.main_check.toggled.connect(self.toggle_main)
@@ -527,7 +528,7 @@ class Window(QMainWindow):
         self.brush_size.valueChanged.connect(self.change_brush_size)
         brush_tools.addWidget(self.brush_size)
         softness_tools=brush_tools
-        softness_tools.addWidget(QLabel('도장 경계 부드러움'))
+        softness_tools.addWidget(QLabel('도장 경계'))
         self.clone_softness=NumericControl();self.clone_softness.setRange(0,100);self.clone_softness.setValue(50)
         self.clone_softness.valueChanged.connect(lambda value:setattr(self.canvas,'clone_softness',value/100))
         softness_tools.addWidget(self.clone_softness)
@@ -629,12 +630,15 @@ class Window(QMainWindow):
     def current(self):
         item=self.list.currentItem(); return self.entries.get(item.data(Qt.ItemDataRole.UserRole)) if item else None
     def refresh_recent_projects(self):
-        self.history_summary.setText(f'저장한 작업 {len(self.recent_projects)}개 · 클릭해서 열기')
+        self.history_summary.setText(f'저장한 작업 {len(self.recent_projects)}개 · 이름순')
         self.history_list.clear()
-        for path in self.recent_projects:
+        for path in sorted(self.recent_projects,key=lambda value:(Path(value).name.removesuffix('.photo.json').casefold(),value.casefold())):
             file=Path(path);name=file.name.removesuffix('.photo.json')
-            item=QListWidgetItem(name+('  [현재 작업]' if self.project==path else '')+('  [파일 없음]' if not file.is_file() else ''))
-            item.setData(Qt.ItemDataRole.UserRole,path);item.setToolTip(path);self.history_list.addItem(item)
+            try:modified=datetime.fromtimestamp(file.stat().st_mtime).strftime('%Y-%m-%d %H:%M')
+            except OSError:modified='파일 없음'
+            item=QListWidgetItem(f'{name}  ·  {modified}')
+            item.setSizeHint(QSize(0,34))
+            item.setData(Qt.ItemDataRole.UserRole,path);item.setToolTip(f'{name}\n마지막 작업: {modified} (마지막 저장 기준)\n{path}');self.history_list.addItem(item)
             if self.project==path:
                 font=item.font();font.setBold(True);item.setFont(font);self.history_list.setCurrentItem(item)
         if not self.recent_projects:
@@ -1355,7 +1359,7 @@ if __name__=='__main__':
         font_id=QFontDatabase.addApplicationFont(str(font_path))
         families=QFontDatabase.applicationFontFamilies(font_id)
         if families: app.setFont(QFont(families[0], 10))
-    app.setStyleSheet('QWidget {font-family: "Malgun Gothic"; font-size: 12px;} QPushButton {padding: 8px 12px;} QListWidget {background:#202630;color:#eef2f8;} QListWidget::item:selected {background:#355e89;}')
+    apply_theme(app)
     window=Window(); window.show()
     if '--smoke-test' in sys.argv:
         assert not app.windowIcon().isNull() and not window.windowIcon().isNull()
