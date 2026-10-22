@@ -6,6 +6,79 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_crop_stretches_all_kept_pixels_to_original_size_without_padding(self):
+  from imaging import stretch_crop
+  image=Image.new('RGBA',(200,300),'white')
+  image.paste('red',(0,50,50,250));image.paste('green',(50,50,150,250));image.paste('blue',(150,50,200,250))
+  original=image.tobytes();result=stretch_crop(image,[0.,1/6,1.,5/6])
+  expected=image.crop((0,50,200,250)).resize((200,300),Image.Resampling.LANCZOS)
+  self.assertEqual(result.size,(200,300));self.assertEqual(result.tobytes(),expected.tobytes());self.assertEqual(image.tobytes(),original)
+  for y in (0,150,299):
+   self.assertEqual(result.getpixel((40,y)),(255,0,0,255));self.assertEqual(result.getpixel((160,y)),(0,0,255,255))
+  self.assertNotIn((255,255,255,255),result.getdata())
+ def test_crop_mode_trim_preview_apply_save_and_undo(self):
+  from imaging import read_pixels,render_entry
+  from PySide6.QtCore import Qt
+  from PySide6.QtTest import QTest
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'source.png';image=Image.new('RGB',(200,300),'white');image.paste('red',(0,50,50,250));image.paste('green',(50,50,150,250));image.paste('blue',(150,50,200,250));image.save(path)
+   original=path.read_bytes();expected=read_pixels(path).crop((0,50,200,250)).resize((200,300),Image.Resampling.LANCZOS)
+   w=Window();w.show();w.add_paths([str(path)]);app.processEvents();editor=w.start_crop_mode()
+   self.assertFalse(editor.isWindow());self.assertIs(w.editor_stack.currentWidget(),editor)
+   editor.trims['top'].setValue(50);editor.trims['bottom'].setValue(50);editor.result_check.setChecked(True)
+   self.assertEqual(editor.preview.pixmap.size().width(),200);self.assertEqual(editor.preview.pixmap.toImage().pixelColor(40,0).getRgb(),(255,0,0,255))
+   self.assertEqual(editor.preview.pixmap.toImage().pixelColor(160,299).getRgb(),(0,0,255,255))
+   editor.accepted.emit();self.assertIsNone(w.crop_editor);self.assertIn('crop_source',w.current())
+   self.assertEqual(render_entry(read_pixels(path),w.current()).tobytes(),expected.tobytes());self.assertEqual(path.read_bytes(),original)
+   w.undo();self.assertNotIn('crop_source',w.current());w.redo();self.assertIn('crop_source',w.current())
+   project=str(Path(d)/'crop.photo.json');w.write_project(project);self.assertTrue(w.open_project(project))
+   output=Path(d)/'cropped.png';export_image(w.current(),output,'PNG')
+   with Image.open(output) as saved:self.assertEqual(saved.size,(200,300));self.assertEqual(saved.convert('RGBA').tobytes(),expected.tobytes());self.assertFalse(saved.info)
+   deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close()
+ def test_crop_preserves_existing_mosaic_and_batch_changes_after_crop(self):
+  import copy
+  from imaging import read_pixels,render_entry,stretch_crop,all_regions
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'source.png';Image.effect_noise((240,320),100).convert('RGB').save(path)
+   w=Window();w.add_paths([str(path)]);region={'rect':[.1,.2,.9,.8],'strength':50};w.current()['regions']=[region]
+   original=copy.deepcopy(w.current());raw=read_pixels(path);rect=[0.,.15,1.,.85]
+   expected=stretch_crop(render_entry(raw,original),rect);w.apply_crop(rect)
+   self.assertEqual(render_entry(raw,w.current()).tobytes(),expected.tobytes());self.assertEqual(len(all_regions(w.current())),1)
+   w.apply_batch_strength([w.current()['id']],8);original['regions'][0]['strength']=8
+   self.assertEqual(all_regions(w.current())[0]['strength'],8);self.assertEqual(render_entry(raw,w.current()).tobytes(),stretch_crop(render_entry(raw,original),rect).tobytes())
+   second=[.1,.1,.9,.9];previous=render_entry(raw,w.current());w.apply_crop(second)
+   self.assertEqual(render_entry(raw,w.current()).tobytes(),stretch_crop(previous,second).tobytes())
+   from cut_editor import CutEditor
+   from composition import decode_asset
+   editor=CutEditor(w.current(),w.ordered(),[w.list.item(0).icon()]);editor.copy_region([0.,0.,1.,1.])
+   self.assertEqual(decode_asset(editor.clipboard[1]).tobytes(),render_entry(raw,w.current()).tobytes());editor.reject()
+   w.clear_mosaics([w.current()['id']]);self.assertFalse(all_regions(w.current()));w.undo();self.assertEqual(len(all_regions(w.current())),1)
+   deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close()
+ def test_crop_close_cancel_and_save_while_selecting(self):
+  from unittest.mock import patch
+  from PySide6.QtWidgets import QMessageBox
+  from PySide6.QtGui import QCloseEvent
+  from imaging import validate_edits
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'source.png';Image.new('RGB',(200,300),'red').save(path)
+   w=Window();w.add_paths([str(path)]);project=str(Path(d)/'crop.photo.json');w.write_project(project)
+   editor=w.start_crop_mode();editor.trims['top'].setValue(20)
+   with patch('main.QMessageBox.exec',return_value=QMessageBox.StandardButton.Cancel):
+    event=QCloseEvent();w.closeEvent(event);self.assertFalse(event.isAccepted())
+   self.assertIs(w.crop_editor,editor);self.assertNotIn('crop_source',w.current())
+   self.assertTrue(w.write_project(project));self.assertIsNone(w.crop_editor);validate_edits(w.current());self.assertIn('crop_source',w.current())
+   for rect in ([0,0,1,0],[0,-1,1,1],[0,0,float('nan'),1]):
+    with self.assertRaises(ValueError):validate_edits({'regions':[],'crop_source':{'rect':rect,'edits':{'regions':[]}}})
+   deadline=time.monotonic()+10
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close()
  def test_main_only_view_keeps_order_and_navigates_visible_items(self):
   import json
   from PySide6.QtCore import Qt

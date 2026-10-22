@@ -1,9 +1,54 @@
 from PIL import Image, ImageOps, ImageDraw, ImageFilter, ImageChops
 from pathlib import Path
 import math
-from composition import render_composition
+from composition import render_composition,validate_composition
 
 EXTENSIONS = {'.webp', '.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'}
+
+def edit_layers(entry):
+    """Crop preserves the earlier editable image, followed by new image edits."""
+    for _ in range(64):
+        yield entry
+        crop=entry.get('crop_source')
+        if crop is None:return
+        if not isinstance(crop,dict) or not isinstance(crop.get('edits'),dict):raise ValueError('잘못된 자르기 데이터')
+        rect=crop.get('rect')
+        if not isinstance(rect,list) or len(rect)!=4 or not all(isinstance(v,(int,float)) and math.isfinite(v) for v in rect) or not (0<=rect[0]<rect[2]<=1 and 0<=rect[1]<rect[3]<=1):
+            raise ValueError('잘못된 자르기 범위')
+        entry=crop['edits']
+    raise ValueError('연속 자르기는 최대 63회까지 지원합니다.')
+
+def all_regions(entry):
+    return [region for layer in edit_layers(entry) for region in layer.get('regions',[])]
+
+def validate_edits(entry):
+    def valid_point(point):
+        return isinstance(point,(list,tuple)) and len(point)==2 and all(isinstance(v,(int,float)) and math.isfinite(v) and 0<=v<=1 for v in point)
+    for layer in edit_layers(entry):
+        if 'composition' in layer:validate_composition(layer['composition'],check_images=True)
+        if not isinstance(layer.get('regions'),list) or not isinstance(layer.get('clones',[]),list):raise ValueError('잘못된 편집 데이터')
+        for stroke in layer.get('clones',[]):
+            if not valid_point(stroke.get('source')) or not isinstance(stroke.get('points'),list) or not stroke['points'] or not all(valid_point(point) for point in stroke['points']):raise ValueError('잘못된 도장 좌표')
+            if not 0<stroke.get('radius',0)<=.1 or not 0<=stroke.get('softness',.5)<=1:raise ValueError('잘못된 도장 크기')
+        for region in layer['regions']:
+            rect=region.get('rect')
+            if not isinstance(rect,list) or len(rect)!=4 or not all(isinstance(v,(int,float)) and math.isfinite(v) and 0<=v<=1 for v in rect) or not 2<=region['strength']<=100:raise ValueError('잘못된 모자이크 영역')
+            if region.get('kind')=='brush':
+                if not isinstance(region.get('points'),list) or not region['points'] or not all(valid_point(p) for p in region['points']) or not 0<region.get('radius',0)<=.1:raise ValueError('잘못된 브러시 영역')
+
+def crop_box(image,rect):
+    x1,y1,x2,y2=rect;w,h=image.size
+    left,top=max(0,min(w-1,round(x1*w))),max(0,min(h-1,round(y1*h)))
+    return (left,top,max(left+1,min(w,round(x2*w))),max(top+1,min(h,round(y2*h))))
+
+def stretch_crop(image,rect):
+    # Resize both axes independently: retain ALL selected pixels, with no padding
+    # and no secondary aspect-ratio crop.
+    return image.crop(crop_box(image,rect)).resize(image.size,Image.Resampling.LANCZOS)
+
+def crop_base(image,entry):
+    crop=entry.get('crop_source')
+    return stretch_crop(render_entry(image,crop['edits']),crop['rect']) if crop else image
 
 def read_pixels(path):
     with Image.open(path) as source:
@@ -136,7 +181,7 @@ class ClonePreview:
 
 def render_entry(image,entry):
     # Retouch first; censor last, so a clone can never undo a mosaic.
-    composed=render_composition(image,entry.get('composition'))
+    composed=render_composition(crop_base(image,entry),entry.get('composition'))
     cloned=render_clones(composed,entry.get('clones',[]))
     return render_regions(cloned,entry['regions']) if entry['regions'] else cloned
 

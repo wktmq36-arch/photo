@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, 
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
     QMessageBox, QSpinBox, QAbstractSpinBox, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu, QDockWidget, QToolButton, QButtonGroup, QStyle, QStackedWidget, QGridLayout, QSizePolicy)
 from exporting import prepare_output
-from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, render_clones, ClonePreview, export_image, export_pair
+from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, render_clones, ClonePreview, export_image, export_pair, crop_base, edit_layers, all_regions, validate_edits
 from composition import pixel_asset,render_composition,validate_composition
 
 def to_qimage(image):
@@ -410,7 +410,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.48'); self.resize(1400,900)
+        super().__init__(); self.setWindowTitle('Photo · 그림 정리와 모자이크 · 순서 드래그 수정 v0.2.49'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -423,7 +423,7 @@ class Window(QMainWindow):
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.history_labels=[]; self.redo_stack=[]; self.snapshot_cache={};  self.dirty=False; self.project=None
         self.clone_cache_key=None;self.clone_cache_image=None;self.clone_live=None;self.clone_live_entry=None
         self.cut_clipboard=None;self.composition_cache_key=None;self.composition_cache_image=None
-        self.cut_editor=None;self.navigation_actions=[]
+        self.cut_editor=None;self.crop_editor=None;self.navigation_actions=[]
         self.clone_timer=QTimer(self);self.clone_timer.setSingleShot(True);self.clone_timer.timeout.connect(self.flush_clone_preview)
         self.thumb_cache=OrderedDict();self.thumb_waiters={};self.thumb_cache_bytes=0
         self.pool=QThreadPool(self); self.pool.setMaxThreadCount(4)
@@ -476,6 +476,8 @@ class Window(QMainWindow):
         self.mode_controls=QWidget();mode_bar=QHBoxLayout(self.mode_controls);mode_bar.setContentsMargins(0,0,0,0);mode_bar.setSpacing(4)
         self.cut_mode_button=QPushButton('컷 편집 모드');self.cut_mode_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.cut_mode_button.clicked.connect(self.toggle_cut_mode);mode_bar.addWidget(self.cut_mode_button)
+        self.crop_mode_button=QPushButton('사진 자르기');self.crop_mode_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.crop_mode_button.clicked.connect(self.toggle_crop_mode);mode_bar.addWidget(self.crop_mode_button)
         self.tool_controls=QWidget();mode_bar.addWidget(self.tool_controls,1)
         self.header_grid.addWidget(self.mode_controls,1,0);self.header_grid.addWidget(self.export_controls,1,1)
         self.editor_stack=QStackedWidget();layout.addWidget(self.editor_stack,1)
@@ -669,6 +671,7 @@ class Window(QMainWindow):
             state.append(cached)
         return (state,entry['id'] if entry else None,self.canvas.active)
     def update_history_controls(self):
+        if self.crop_editor is not None:self.undo_button.setEnabled(False);self.redo_button.setEnabled(False);return
         if self.cut_editor is not None:
             self.undo_button.setEnabled(bool(self.cut_editor.history));self.redo_button.setEnabled(bool(self.cut_editor.redo_history));return
         self.undo_button.setEnabled(bool(self.history));self.redo_button.setEnabled(bool(self.redo_stack))
@@ -678,6 +681,7 @@ class Window(QMainWindow):
         self.history=self.history[-HISTORY_LIMIT:];self.history_labels.append(label);self.history_labels=self.history_labels[-HISTORY_LIMIT:]
         self.redo_stack.clear();self.update_history_controls();self.dirty=True
     def undo(self):
+        if self.crop_editor is not None:return
         if self.cut_editor is not None:self.cut_editor.undo();return
         if not self.history:return
         label=self.history_labels.pop() if self.history_labels else '작업 변경'
@@ -685,6 +689,7 @@ class Window(QMainWindow):
         self.restore_state(self.history.pop());self.update_history_controls()
         self.status.setText('실행 취소: '+label)
     def redo(self):
+        if self.crop_editor is not None:return
         if self.cut_editor is not None:self.cut_editor.redo();return
         if not self.redo_stack:return
         state,label=self.redo_stack.pop()
@@ -770,6 +775,7 @@ class Window(QMainWindow):
     def folder_dialog(self):
         path=QFileDialog.getExistingDirectory(self,'그림 폴더'); self.add_paths([path] if path else [])
     def add_paths(self,paths,insertion_row=None):
+        if self.crop_editor is not None:self.finish_crop_mode(True)
         if self.cut_editor is not None:self.finish_cut_mode(True)
         expanded=[]
         for path in paths:
@@ -801,10 +807,10 @@ class Window(QMainWindow):
         self.update_selection_count()
         for i in range(self.list.count()):
             item=self.list.item(i); entry=self.entries[item.data(Qt.ItemDataRole.UserRole)]
-            item.setText(f'{i+1:03d}  '+Path(entry['path']).name+('  [도장]' if entry.get('clones') else '')+('  [컷]' if entry.get('composition') else ''))
-            item.setData(MOSAIC_ROLE,bool(entry['regions']))
+            item.setText(f'{i+1:03d}  '+Path(entry['path']).name+('  [도장]' if entry.get('clones') else '')+('  [컷]' if entry.get('composition') else '')+('  [자름]' if entry.get('crop_source') else ''))
+            regions=all_regions(entry);item.setData(MOSAIC_ROLE,bool(regions))
             item.setData(MAIN_ROLE,bool(entry.get('main_selected',False)))
-            item.setToolTip(entry['path']+(f'\n모자이크 적용 · {len(entry["regions"])}개 영역' if entry['regions'] else '\n모자이크 없음'))
+            item.setToolTip(entry['path']+(f'\n모자이크 적용 · {len(regions)}개 영역' if regions else '\n모자이크 없음'))
         self.apply_main_filter()
     def visible_rows(self):
         return [row for row in range(self.list.count()) if not self.list.item(row).isHidden()]
@@ -832,6 +838,7 @@ class Window(QMainWindow):
         self.status.setText(f'총 {self.list.count()}장 · 모자이크 {sum(bool(e["regions"]) for e in self.entries.values())}장 · 메인 {sum(bool(e.get("main_selected")) for e in self.entries.values())}장')
     def order_changed(self):self.dirty=True; self.renumber()
     def remove_selected(self):
+        if self.crop_editor is not None:self.finish_crop_mode(True)
         if self.cut_editor is not None:self.finish_cut_mode(True)
         rows=sorted(self.list.row(item) for item in self.list.selectedItems())
         if not rows:return
@@ -937,10 +944,10 @@ class Window(QMainWindow):
         return (id(entry),id(image),len(entry.get('clones',[])))
     def composed_image(self,entry,image):
         composition=entry.get('composition')
-        if not composition:return image
-        key=(id(entry),id(image),id(composition))
+        if not composition and not entry.get('crop_source'):return image
+        key=(id(entry),id(image),id(composition),id(entry.get('crop_source')))
         if key!=self.composition_cache_key:
-            self.composition_cache_image=render_composition(image,composition);self.composition_cache_key=key
+            self.composition_cache_image=render_composition(crop_base(image,entry),composition);self.composition_cache_key=key
         return self.composition_cache_image
     def copy_for_cut(self):
         entry=self.current()
@@ -956,6 +963,7 @@ class Window(QMainWindow):
         entry['composition']=copy.deepcopy(composition)
         self.clone_cache_key=None;self.composition_cache_key=None;self.render();self.renumber()
     def edit_cuts(self):
+        if self.crop_editor is not None:self.finish_crop_mode(True)
         if self.cut_editor is not None:return self.cut_editor
         entry=self.current()
         if not entry:return
@@ -974,6 +982,7 @@ class Window(QMainWindow):
         if self.cut_editor is not None:self.finish_cut_mode(True)
         else:self.edit_cuts()
     def sync_cut_editor(self):
+        if self.crop_editor is not None:self.finish_crop_mode(True)
         editor=self.cut_editor
         if editor is None:return
         editor.finish_gesture()
@@ -992,6 +1001,40 @@ class Window(QMainWindow):
         for action in self.navigation_actions:action.setEnabled(True)
         self.cut_mode_button.setText('컷 편집 모드');self.update_history_controls();self.render();self.list.setFocus()
         self.tool_controls.setEnabled(True)
+    def toggle_crop_mode(self):
+        if self.crop_editor is not None:self.finish_crop_mode(True)
+        else:self.start_crop_mode()
+    def start_crop_mode(self):
+        if self.crop_editor is not None:return self.crop_editor
+        if self.cut_editor is not None:self.finish_cut_mode(True)
+        entry=self.current()
+        if not entry:return
+        from crop_editor import CropEditor
+        try:
+            editor=CropEditor(entry,self);self.crop_editor=editor
+            self.editor_stack.addWidget(editor);self.editor_stack.setCurrentWidget(editor)
+            editor.accepted.connect(lambda:self.finish_crop_mode(True));editor.rejected.connect(lambda:self.finish_crop_mode(False))
+            for action in self.navigation_actions:action.setEnabled(False)
+            self.tool_controls.setEnabled(False);self.crop_mode_button.setText('자르기 적용');self.update_history_controls()
+            return editor
+        except Exception as exc:QMessageBox.warning(self,'사진 자르기 실패',str(exc))
+    def apply_crop(self,rect):
+        entry=self.current()
+        if not entry or rect==[0.,0.,1.,1.]:return
+        if len(list(edit_layers(entry)))>=64:raise ValueError('연속 자르기는 최대 63회까지 지원합니다.')
+        source=copy.deepcopy({key:entry[key] for key in ('regions','clones','composition','crop_source') if key in entry})
+        pending={'regions':[],'clones':[],'crop_source':{'rect':list(rect),'edits':source}}
+        validate_edits(pending);self.snapshot('사진 자르기 · 원래 해상도로 늘리기')
+        entry.update(pending);entry.pop('composition',None)
+        self.canvas.active=-1;self.clone_cache_key=None;self.composition_cache_key=None;self.original.setChecked(False)
+        self.render();self.renumber();self.status.setText('선택 부분 전체를 원래 가로×세로 크기로 늘렸습니다. Ctrl+Z로 취소')
+    def finish_crop_mode(self,apply=True):
+        editor=self.crop_editor
+        if editor is None:return
+        if apply and editor.has_changes():self.apply_crop(editor.rect())
+        self.crop_editor=None;self.editor_stack.setCurrentWidget(self.splitter);self.editor_stack.removeWidget(editor);editor.deleteLater()
+        for action in self.navigation_actions:action.setEnabled(True)
+        self.tool_controls.setEnabled(True);self.crop_mode_button.setText('사진 자르기');self.update_history_controls();self.render();self.list.setFocus()
     def committed_clones(self,entry,image):
         key=self.clone_key(entry,image)
         if key!=self.clone_cache_key:
@@ -1069,18 +1112,20 @@ class Window(QMainWindow):
         self.snapshot('모자이크 강도 변경')
         entry['regions'][index]['strength']=value;self.dirty=True;self.render()
     def clear_mosaics(self,ids):
-        targets=[self.entries[eid] for eid in set(ids) if eid in self.entries and self.entries[eid]['regions']]
+        targets=[self.entries[eid] for eid in set(ids) if eid in self.entries and all_regions(self.entries[eid])]
         if not targets:
             self.status.setText('지울 모자이크가 없습니다.');return
         self.snapshot(f'모자이크 초기화 · {len(targets)}장')
-        for entry in targets:entry['regions']=[]
+        for entry in targets:
+            for layer in edit_layers(entry):layer['regions']=[]
+        self.composition_cache_key=None;self.clone_cache_key=None
         self.canvas.active=-1;self.canvas.start=None;self.canvas.end=None;self.canvas.drawing_brush=False
         self.original.setChecked(False);self.render();self.renumber()
         self.status.setText(f'{len(targets)}장의 모자이크를 모두 지웠습니다. 도장 보정은 유지됩니다. Ctrl+Z로 복원')
     def batch_strength_dialog(self):
         ids=[item.data(Qt.ItemDataRole.UserRole) for item in self.list.selectedItems()]
-        entries=[self.entries[eid] for eid in ids if self.entries[eid]['regions']]
-        count=sum(len(entry['regions']) for entry in entries)
+        entries=[self.entries[eid] for eid in ids if all_regions(self.entries[eid])]
+        count=sum(len(all_regions(entry)) for entry in entries)
         if not count:
             self.status.setText('모자이크가 있는 사진을 먼저 선택하세요. Ctrl+A로 전체 선택할 수 있습니다.')
             return
@@ -1091,17 +1136,18 @@ class Window(QMainWindow):
         if accepted:self.apply_batch_strength(ids,strength)
     def apply_batch_strength(self,ids,strength):
         if not 2<=strength<=100:raise ValueError('강도는 2~100 범위여야 합니다.')
-        entries=[self.entries[eid] for eid in set(ids) if eid in self.entries and self.entries[eid]['regions']]
-        changed=[entry for entry in entries if any(r['strength']!=strength for r in entry['regions'])]
+        entries=[self.entries[eid] for eid in set(ids) if eid in self.entries and all_regions(self.entries[eid])]
+        changed=[entry for entry in entries if any(r['strength']!=strength for r in all_regions(entry))]
         if not changed:
             self.status.setText('변경할 모자이크 강도가 없습니다.');return
         self.snapshot(f'모자이크 강도 일괄 변경 · {len(changed)}장')
         for entry in changed:
-            for region in entry['regions']:region['strength']=strength
+            for region in all_regions(entry):region['strength']=strength
+        self.composition_cache_key=None;self.clone_cache_key=None
         # Updating the slider here must not create a separate edit or history entry.
         self.strength.blockSignals(True);self.strength.setValue(strength);self.strength.blockSignals(False)
         self.original.setChecked(False);self.render();self.renumber()
-        self.status.setText(f'{len(changed)}장 · {sum(len(e["regions"]) for e in changed)}개 영역 강도를 {strength}로 변경했습니다. Ctrl+Z로 일괄 취소')
+        self.status.setText(f'{len(changed)}장 · {sum(len(all_regions(e)) for e in changed)}개 영역 강도를 {strength}로 변경했습니다. Ctrl+Z로 일괄 취소')
     def remove_region(self):
         entry=self.current(); i=self.canvas.active
         if entry and 0<=i<len(entry['regions']):
@@ -1113,6 +1159,7 @@ class Window(QMainWindow):
         if self.busy:
             QMessageBox.information(self,'내보내기 중','내보내기가 끝난 후 새 작업을 시작하세요.');return False
         if not self.confirm_discard():return False
+        self.finish_crop_mode(False)
         self.finish_cut_mode(False)
         self.clone_timer.stop();self.clone_live=None;self.clone_live_entry=None
         self.clone_cache_key=None;self.composition_cache_key=None;self.cut_clipboard=None
@@ -1160,7 +1207,7 @@ class Window(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self,'저장 실패',str(exc));return False
     def confirm_discard(self):
-        if not self.dirty and not self.has_cut_changes():return True
+        if not self.dirty and not self.has_cut_changes() and not (self.crop_editor and self.crop_editor.has_changes()):return True
         buttons=QMessageBox.StandardButton
         box=QMessageBox(QMessageBox.Icon.Question,'작업 저장',
             '저장하지 않은 변경 사항이 있습니다. 저장할까요?',buttons.Save|buttons.Discard|buttons.Cancel,self)
@@ -1181,19 +1228,10 @@ class Window(QMainWindow):
             data=json.loads(Path(path).read_text(encoding='utf-8')); entries=data['images']
             if data.get('version')!=1:raise ValueError('지원하지 않는 작업 파일입니다.')
             for e in entries:
-                if 'composition' in e:validate_composition(e['composition'],check_images=True)
                 if not isinstance(e.get('main_selected',False),bool):raise ValueError('잘못된 메인 선택 상태')
                 if not isinstance(e['path'],str) or not isinstance(e['regions'],list):raise ValueError('잘못된 작업 파일')
-                if not isinstance(e.get('clones',[]),list):raise ValueError('잘못된 도장 데이터')
-                for stroke in e.get('clones',[]):
-                    def valid_point(point):return isinstance(point,(list,tuple)) and len(point)==2 and all(isinstance(v,(int,float)) and 0<=v<=1 for v in point)
-                    if not valid_point(stroke.get('source')) or not isinstance(stroke.get('points'),list) or not stroke['points'] or not all(valid_point(point) for point in stroke['points']):raise ValueError('잘못된 도장 좌표')
-                    if not 0<stroke.get('radius',0)<=.1 or not 0<=stroke.get('softness',.5)<=1:raise ValueError('잘못된 도장 크기')
-                for r in e['regions']:
-                    if len(r['rect'])!=4 or not all(isinstance(v,(int,float)) and 0<=v<=1 for v in r['rect']) or not 2<=r['strength']<=100:raise ValueError('잘못된 모자이크 영역')
-                    if r.get('kind')=='brush':
-                        if not isinstance(r.get('points'),list) or not r['points'] or not 0<r.get('radius',0)<=.1:raise ValueError('잘못된 브러시 영역')
-                        if not all(len(point)==2 and all(isinstance(v,(int,float)) and 0<=v<=1 for v in point) for point in r['points']):raise ValueError('잘못된 브러시 좌표')
+                validate_edits(e)
+            self.finish_crop_mode(False)
             self.finish_cut_mode(False)
             self.populate(entries); self.history=[]; self.history_labels=[]; self.redo_stack=[];self.snapshot_cache={};self.update_history_controls(); self.project=str(Path(path).resolve()); self.dirty=False
             self.restore_project_view(data.get('view',{}))
@@ -1349,6 +1387,10 @@ if __name__=='__main__':
         window.set_main_for_ids([window.ordered()[i]['id'] for i in (0,3)],True)
         window.main_only.setChecked(True);assert window.visible_rows()==[0,3]
         window.main_only.setChecked(False);assert [entry['path'] for entry in window.ordered()]==smoke_order
+        crop=window.start_crop_mode();assert not crop.isWindow()
+        crop.trims['top'].setValue(5);crop.trims['bottom'].setValue(5);crop.result_check.setChecked(True);crop.accepted.emit()
+        assert window.crop_editor is None and window.current().get('crop_source')
+        assert render_entry(read_pixels(window.current()['path']),window.current()).size==(80,60)
         for index,entry in enumerate(window.ordered()):
             export_image(entry,Path(smoke_folder.name)/f'output{index}.png','PNG')
         window.dirty=False

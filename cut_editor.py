@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (QDialog,QWidget,QVBoxLayout,QHBoxLayout,QPushButt
     QListWidget,QListWidgetItem,QSplitter,QDialogButtonBox,QMessageBox,QSpinBox,QLineEdit,
     QAbstractItemView,QMenu,QCheckBox)
 from composition import empty_composition,pixel_asset,decode_asset,render_composition
-from imaging import read_pixels,render_entry,render_clones,render_regions
+from imaging import read_pixels,render_entry,render_clones,render_regions,crop_base
 
 
 def pixmap_for(image):
@@ -209,7 +209,7 @@ class CutEditor(QDialog):
         self.entry=entry;self.entries=entries;self.clipboard=clipboard;self.source_image=None;self.source_dirty=False
         self.composition=copy.deepcopy(entry.get('composition') or empty_composition())
         self.history=[];self.redo_history=[];self.gesture=None;self.assets_cache={}
-        self.base=read_pixels(entry['path']);self.preview=self.base.copy();self.preview.thumbnail((1600,1600))
+        self.raw=read_pixels(entry['path']);self.base=crop_base(self.raw,entry);self.preview=self.base.copy();self.preview.thumbnail((1600,1600))
         root=QVBoxLayout(self);intro=QLabel('원본 영역 선택 → 컷 그리기 → 붙여넣기')
         intro.setStyleSheet('font-size:14px;font-weight:bold;padding:4px;')
         header=QHBoxLayout();root.addLayout(header);header.addWidget(intro,1)
@@ -249,7 +249,7 @@ class CutEditor(QDialog):
         actions=QHBoxLayout();rl.addLayout(actions)
         self.paste_button=QPushButton('선택 부분 붙여넣기 →');self.paste_button.clicked.connect(self.paste)
         self.paste_button.setStyleSheet('background:#287fce;color:white;font-weight:bold;padding:9px;');actions.addWidget(self.paste_button)
-        fill=QPushButton('원래 해상도로 채우기');fill.setToolTip('출력 크기는 원래대로 유지합니다. 선택 부분을 비율 유지 확대하고 넘친 부분은 자릅니다. 전체를 보려면 그림 전체 보이게를 누르세요.');fill.clicked.connect(self.fill_original_resolution);actions.addWidget(fill)
+        fill=QPushButton('선택 부분 전체로 늘리기');fill.setToolTip('선택한 부분 전체를 대상 가로×세로 크기로 늘립니다. 비율이 달라도 추가로 자르지 않습니다.');fill.clicked.connect(self.fill_original_resolution);actions.addWidget(fill)
         fit_controls=QHBoxLayout();rl.addLayout(fit_controls)
         for label,fn in [('그림 전체 보이게',lambda:self.fit(False)),('컷에 꽉 채우기',lambda:self.fit(True)),('-',lambda:self.scale_layer(-1)),('+',lambda:self.scale_layer(1))]:
             button=QPushButton(label);button.clicked.connect(fn);fit_controls.addWidget(button)
@@ -397,7 +397,7 @@ class CutEditor(QDialog):
     def cell(self):
         return self.composition['cells'][self.canvas.active] if 0<=self.canvas.active<len(self.composition['cells']) else None
     def copy_region(self,rect):
-        image=render_entry(self.base,dict(self.entry,composition=self.composition))
+        image=render_entry(self.raw,dict(self.entry,composition=self.composition))
         box=(round(rect[0]*image.width),round(rect[1]*image.height),round(rect[2]*image.width),round(rect[3]*image.height))
         if box[2]>box[0] and box[3]>box[1]:
             self.clipboard=pixel_asset(image.crop(box));self.source_image=decode_asset(self.clipboard[1]);self.source_canvas.selection=None
@@ -417,7 +417,7 @@ class CutEditor(QDialog):
         self.record();key,data=self.clipboard;self.composition['assets'][key]=data
         # Keep earlier cuts editable underneath; this full-canvas cut is on top.
         if self.composition['cells']==[{'rect':[0.,0.,1.,1.]}]:self.composition['cells']=[]
-        self.composition['cells'].append({'rect':[0.,0.,1.,1.],'asset':key,'scale':1.,'offset':[0.,0.]})
+        self.composition['cells'].append({'rect':[0.,0.,1.,1.],'asset':key,'scale':1.,'offset':[0.,0.],'stretch':True})
         self.composition['freeform']=True;self.canvas.active=len(self.composition['cells'])-1;self.set_mode('move');self.refresh()
         self.info.setText(f'선택 부분을 {self.base.width} × {self.base.height}px에 채웠습니다. 휠/드래그로 구도 조절')
     def move_layer(self,delta):
@@ -434,7 +434,7 @@ class CutEditor(QDialog):
     def fit(self,cover):
         cell=self.cell()
         if not cell or 'asset' not in cell:return
-        self.record();source=self.assets_cache[cell['asset']];x1,y1,x2,y2=cell['rect'];w,h=(x2-x1)*self.base.width,(y2-y1)*self.base.height
+        self.record();cell.pop('stretch',None);source=self.assets_cache[cell['asset']];x1,y1,x2,y2=cell['rect'];w,h=(x2-x1)*self.base.width,(y2-y1)*self.base.height
         cell['scale']=1. if cover else max(.05,min(32.,min(w/source.width,h/source.height)/max(w/source.width,h/source.height)))
         cell['offset']=[0.,0.];self.refresh()
     def remove_layer(self):

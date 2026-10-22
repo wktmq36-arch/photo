@@ -40,6 +40,7 @@ def validate_composition(value,check_images=False):
         if not numbers(rect,4) or not (0<=rect[0]<rect[2]<=1 and 0<=rect[1]<rect[3]<=1):raise ValueError('잘못된 컷 범위')
         border=cell.get('border',0.)
         if not isinstance(border,(int,float)) or not math.isfinite(border) or not 0<=border<=.1:raise ValueError('잘못된 컷 테두리 두께')
+        if not isinstance(cell.get('stretch',False),bool):raise ValueError('잘못된 이미지 맞춤 방식')
         if 'asset' in cell:
             if cell['asset'] not in value['assets']:raise ValueError('컷 이미지 누락')
             scale=cell.get('scale',1.)
@@ -75,10 +76,12 @@ def render_composition(image,composition,cache=None):
         cw,ch=box[2]-box[0],box[3]-box[1]
         if cw<=0 or ch<=0:continue
         ratio=max(cw/source.width,ch/source.height)*cell.get('scale',1.)
+        ratio_x=cw/source.width*cell.get('scale',1.) if cell.get('stretch') else ratio
+        ratio_y=ch/source.height*cell.get('scale',1.) if cell.get('stretch') else ratio
         ox,oy=cell.get('offset',[0.,0.])
-        left=(cw-source.width*ratio)/2+ox*cw;top=(ch-source.height*ratio)/2+oy*ch
+        left=(cw-source.width*ratio_x)/2+ox*cw;top=(ch-source.height*ratio_y)/2+oy*ch
         # Inverse mapping renders only the clipped cell, even at high zoom.
-        patch=source.transform((cw,ch),Image.Transform.AFFINE,(1/ratio,0,-left/ratio,0,1/ratio,-top/ratio),Image.Resampling.BICUBIC)
+        patch=source.transform((cw,ch),Image.Transform.AFFINE,(1/ratio_x,0,-left/ratio_x,0,1/ratio_y,-top/ratio_y),Image.Resampling.BICUBIC)
         background=Image.new('RGBA',(cw,ch),'white');background.alpha_composite(patch)
         if composition.get('freeform'):
             gap=round(composition.get('gutter',0.)*width)
