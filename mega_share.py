@@ -48,13 +48,20 @@ class MegaClient:
     def check_login(self):
         self.run('whoami')
 
+    def ensure_folder(self,remote_folder):
+        try:self.run('mkdir','-p',remote_folder)
+        except RuntimeError:
+            # Some MEGAcmd versions report an error for an existing directory
+            # even with -p. Continue only if the exact folder is accessible.
+            self.run('ls',remote_folder+'/')
+
     def archive_names(self,remote_folder='/Reward'):
-        self.run('mkdir','-p',remote_folder)
+        self.ensure_folder(remote_folder)
         output=self.run('find',remote_folder,'--type=f')
         return {line.strip().rsplit('/',1)[-1] for line in output.splitlines() if line.strip().startswith(remote_folder+'/')}
 
     def upload_and_link(self,archive,remote_folder):
-        self.run('mkdir','-p',remote_folder)
+        self.ensure_folder(remote_folder)
         self.run('put',str(Path(archive).resolve()),remote_folder+'/',timeout=86400)
         remote_path=remote_folder+'/'+Path(archive).name
         try:output=self.run('export',remote_path)

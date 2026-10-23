@@ -6,6 +6,15 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_mega_existing_reward_folder_requires_successful_access_check(self):
+  import subprocess
+  from unittest.mock import patch
+  from mega_share import MegaClient
+  existing=subprocess.CompletedProcess([],1,'Folder already exists: Reward');accessible=subprocess.CompletedProcess([],0,'existing.zip')
+  with patch('mega_share.subprocess.run',side_effect=[existing,accessible,subprocess.CompletedProcess([],0,'/Reward/existing.zip')]) as run:
+   self.assertEqual(MegaClient('MegaClient.exe').archive_names(),{'existing.zip'});self.assertEqual(run.call_args_list[1].args[0][1:],['ls','/Reward/'])
+  with patch('mega_share.subprocess.run',side_effect=[existing,subprocess.CompletedProcess([],1,'Access denied')]):
+   with self.assertRaisesRegex(RuntimeError,'Access denied'):MegaClient('MegaClient.exe').archive_names()
  def test_mega_reward_flat_upload_and_remote_filename_collision(self):
   import json,subprocess
   from unittest.mock import patch
