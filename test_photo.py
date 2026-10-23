@@ -6,6 +6,33 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_export_auto_mega_chains_after_success_and_reports_once(self):
+  from unittest.mock import patch
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   source=Path(d)/'source.png';Image.new('RGBA',(32,32),'red').save(source)
+   w=Window();w.export_folder=d;w.export_name.setText('05_risa');w.add_paths([str(source)]);w.auto_mega.setChecked(True)
+   with patch.object(w,'mega_client_path',return_value='MegaClient.exe'),patch('main.MegaClient'),patch('main.create_package',return_value='state.upload.json') as package,patch('main.upload_package',return_value='05_risa_261023.txt'),patch('main.QMessageBox.information') as message:
+    w.export();deadline=time.monotonic()+10
+    while (w.busy or w.jobs) and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+    self.assertFalse(w.busy);package.assert_called_once_with(Path(d)/'05_risa/05_risa_uncen','05_risa');message.assert_called_once();self.assertEqual(message.call_args.args[1],'내보내기 및 MEGA 공유 완료')
+   w.dirty=False;w.close()
+ def test_export_auto_mega_skips_main_only_and_failed_exports(self):
+  from unittest.mock import patch
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   source=Path(d)/'source.png';Image.new('RGBA',(32,32),'red').save(source)
+   w=Window();w.export_folder=d;w.export_name.setText('a');w.add_paths([str(source)]);w.auto_mega.setChecked(True)
+   with patch.object(w,'mega_client_path',return_value='MegaClient.exe'),patch.object(w,'start_mega_share') as share,patch('main.export_pair',side_effect=OSError('disk failed')),patch('main.QMessageBox.information'):
+    w.export();deadline=time.monotonic()+10
+    while (w.busy or w.jobs) and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+    share.assert_not_called();self.assertTrue(w.errors)
+   w.output_checks['uncen'].setChecked(False);w.output_checks['cen'].setChecked(False);w.main_check.setChecked(True)
+   with patch.object(w,'mega_client_path') as preflight,patch.object(w,'start_mega_share') as share,patch('main.QMessageBox.information'):
+    w.export();deadline=time.monotonic()+10
+    while (w.busy or w.jobs) and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+    preflight.assert_not_called();share.assert_not_called()
+   w.dirty=False;w.close()
  def test_mega_package_aes_password_date_and_no_overwrite(self):
   import json,pyzipper
   from mega_share import create_package
@@ -742,6 +769,7 @@ class Tests(unittest.TestCase):
   from PySide6.QtCore import QSettings
   self.settings_folder=tempfile.TemporaryDirectory();self.addCleanup(self.settings_folder.cleanup)
   settings=QSettings(str(Path(self.settings_folder.name)/'settings.ini'),QSettings.Format.IniFormat)
+  settings.setValue('mega/autoShare',False)
   mock=patch('main.QSettings',return_value=settings);mock.start();self.addCleanup(mock.stop)
 
  def test_export(self):

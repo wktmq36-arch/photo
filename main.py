@@ -413,7 +413,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.58'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.59'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -474,6 +474,8 @@ class Window(QMainWindow):
             check=QCheckBox(label);check.setToolTip('모자이크를 제외한 편집 적용 · 원본 확장자 유지 · 메타데이터 제거' if key=='uncen' else label);check.setChecked(self.settings.value('export/'+key,True,type=bool))
             check.toggled.connect(lambda value,k=key:self.settings.setValue('export/'+k,value))
             self.output_checks[key]=check;export_controls.addWidget(check)
+        self.auto_mega=QCheckBox('MEGA 자동 공유');self.auto_mega.setChecked(self.settings.value('mega/autoShare',True,type=bool));self.auto_mega.setToolTip('원본용 내보내기 성공 후 암호 ZIP · MEGA 업로드 · 링크 TXT까지 자동 진행')
+        self.auto_mega.toggled.connect(lambda value:self.settings.setValue('mega/autoShare',value));export_controls.addWidget(self.auto_mega)
         self.format=QComboBox(); self.format.addItems(['PNG','WEBP','JPEG']); export_controls.addWidget(self.format)
         self.export_button=QPushButton('내보내기');self.export_button.setObjectName('primaryButton'); self.export_button.clicked.connect(self.export); export_controls.addWidget(self.export_button)
         self.mega_button=QToolButton();self.mega_button.setText('MEGA로 공유');self.mega_button.setToolTip('이미 내보낸 원본용 폴더를 암호화 ZIP으로 압축 → 업로드 → 링크 TXT 생성')
@@ -1340,6 +1342,11 @@ class Window(QMainWindow):
         reserved={'CON','PRN','AUX','NUL'}|{f'COM{i}' for i in range(1,10)}|{f'LPT{i}' for i in range(1,10)}
         if stem.split('.')[0].upper() in reserved or any(ord(c)<32 for c in stem):
             QMessageBox.warning(self,'폴더 이름','사용할 수 없는 폴더 이름입니다.');return
+        self.export_mega_client=None
+        if outputs['uncen'] and self.auto_mega.isChecked():
+            self.export_mega_client=self.mega_client_path()
+            if not self.export_mega_client:
+                self.status.setText('MEGA 연결 설정을 완료한 뒤 다시 내보내거나 자동 공유를 해제하세요.');return
         try:
             destination=prepare_output(folder,stem,[entry['path'] for entry in self.entries.values()],self.confirm_output_replacement,outputs)
             if destination is None:
@@ -1347,17 +1354,20 @@ class Window(QMainWindow):
         except (OSError,ValueError) as exc:
             QMessageBox.warning(self,'출력 폴더 준비 실패',str(exc));return
         entries=copy.deepcopy(self.ordered()); fmt=self.format.currentText(); ext={'PNG':'png','WEBP':'webp','JPEG':'jpg'}[fmt]
-        self.busy=True; self.export_button.setEnabled(False); self.progress.setRange(0,len(entries)); self.progress.setValue(0); self.progress.show(); self.errors=[]; self.exported_main=0;self.exported_files=0
+        self.busy=True; self.export_button.setEnabled(False);self.mega_button.setEnabled(False); self.progress.setRange(0,len(entries)); self.progress.setValue(0); self.progress.show(); self.errors=[]; self.exported_main=0;self.exported_files=0
         self.export_next(entries,0,destination,fmt,ext,stem,outputs)
     def export_next(self,entries,index,destination,fmt,ext,stem,outputs):
         if index==len(entries):
-            self.busy=False; self.export_button.setEnabled(True); self.progress.hide()
+            self.busy=False; self.export_button.setEnabled(True);self.mega_button.setEnabled(True); self.progress.hide()
             message=f'{self.exported_files}개 파일 저장 완료\n{destination}'
             if outputs['cen']:message+=f'\n{stem}_cen: 모자이크 처리본'
             if outputs['uncen']:message+=f'\n{stem}_uncen: 원본용 · 편집 적용 / 모자이크 제외 / 메타데이터 제거'
             if self.exported_main:message+=f'\n{stem}_main: 메인 게시용 {self.exported_main}장'
             message+='\n출력 파일 메타데이터 제거 검증 완료'
             if self.errors:message+='\n\n실패:\n'+'\n'.join(self.errors[:10])
+            if not self.errors and outputs['uncen'] and getattr(self,'export_mega_client',None):
+                self.start_mega_share(self.export_mega_client,Path(destination)/(stem+'_uncen'),stem,export_message=message);return
+            if self.errors and getattr(self,'export_mega_client',None):message+='\n파일 출력에 실패하여 MEGA 자동 공유는 실행하지 않았습니다.'
             QMessageBox.information(self,'내보내기 결과',message); return
         def complete(result):
             if not result[0]:self.errors.append(Path(entries[index]['path']).name+': '+result[1])
@@ -1392,7 +1402,7 @@ class Window(QMainWindow):
         if not path:return
         client=self.mega_client_path()
         if client:self.start_mega_share(client,state_path=path)
-    def start_mega_share(self,client_path,source=None,stem=None,state_path=None):
+    def start_mega_share(self,client_path,source=None,stem=None,state_path=None,export_message=None):
         if self.busy:return
         self.busy=True;self.export_button.setEnabled(False);self.mega_button.setEnabled(False)
         self.progress.setRange(0,0);self.progress.show();self.status.setText('암호 압축 · MEGA 업로드 · 공유 링크 생성 중…')
@@ -1405,10 +1415,10 @@ class Window(QMainWindow):
             self.busy=False;self.export_button.setEnabled(True);self.mega_button.setEnabled(True);self.progress.hide()
             if result[0]:
                 self.status.setText(f'MEGA 업로드와 TXT 저장 완료: {result[1]}')
-                QMessageBox.information(self,'MEGA 공유 완료',f'링크와 압축 비밀번호를 저장했습니다.\n{result[1]}')
+                QMessageBox.information(self,'내보내기 및 MEGA 공유 완료' if export_message else 'MEGA 공유 완료',(export_message+'\n\n' if export_message else '')+f'링크와 압축 비밀번호를 저장했습니다.\n{result[1]}')
             else:
                 self.status.setText('MEGA 공유 실패 · ZIP은 유지되며 재시도할 수 있습니다.')
-                QMessageBox.warning(self,'MEGA 공유 실패',str(result[1]))
+                QMessageBox.warning(self,'MEGA 공유 실패',('이미지 내보내기는 완료됐지만 MEGA 공유에 실패했습니다.\n' if export_message else '')+str(result[1]))
         self.run_job(self.export_pool,work,complete)
     def closeEvent(self,event):
         if self.busy:QMessageBox.information(self,'작업 처리 중','내보내기 또는 MEGA 공유가 끝난 후 종료하세요.'); event.ignore(); return
