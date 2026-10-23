@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, 
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
     QMessageBox, QSpinBox, QAbstractSpinBox, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu, QDockWidget, QToolButton, QButtonGroup, QStyle, QStackedWidget, QGridLayout, QSizePolicy)
 from exporting import prepare_output
+from mega_share import MegaClient,find_client,create_package,upload_package
 from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, render_clones, ClonePreview, export_image, export_pair, crop_base, edit_layers, all_regions, validate_edits
 from composition import paired_asset,pixel_asset,render_composition,validate_composition
 
@@ -412,7 +413,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.57'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.58'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -475,6 +476,9 @@ class Window(QMainWindow):
             self.output_checks[key]=check;export_controls.addWidget(check)
         self.format=QComboBox(); self.format.addItems(['PNG','WEBP','JPEG']); export_controls.addWidget(self.format)
         self.export_button=QPushButton('내보내기');self.export_button.setObjectName('primaryButton'); self.export_button.clicked.connect(self.export); export_controls.addWidget(self.export_button)
+        self.mega_button=QToolButton();self.mega_button.setText('MEGA로 공유');self.mega_button.setToolTip('이미 내보낸 원본용 폴더를 암호화 ZIP으로 압축 → 업로드 → 링크 TXT 생성')
+        self.mega_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup);self.mega_button.clicked.connect(self.share_uncensored)
+        mega_menu=QMenu(self.mega_button);mega_menu.addAction('MEGA 연결 설정',self.mega_settings);mega_menu.addAction('실패한 업로드 재시도',self.retry_mega_share);self.mega_button.setMenu(mega_menu);export_controls.addWidget(self.mega_button)
         self.mode_controls=QWidget();mode_bar=QHBoxLayout(self.mode_controls);mode_bar.setContentsMargins(0,0,0,0);mode_bar.setSpacing(4)
         self.cut_mode_button=QPushButton('컷 편집 모드');self.cut_mode_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.cut_mode_button.clicked.connect(self.toggle_cut_mode);mode_bar.addWidget(self.cut_mode_button)
@@ -1362,8 +1366,52 @@ class Window(QMainWindow):
                 if outputs['main'] and entries[index].get('main_selected',False):self.exported_main+=1
             self.progress.setValue(index+1); self.export_next(entries,index+1,destination,fmt,ext,stem,outputs)
         self.run_job(self.export_pool,lambda:export_pair(entries[index],index+1,destination,fmt,stem,outputs,self.exported_main+1),complete)
+    def mega_settings(self):
+        from mega_dialog import MegaSettings
+        MegaSettings(self.settings,self).exec()
+    def mega_client_path(self):
+        client=find_client(str(self.settings.value('mega/client','')))
+        if not client:
+            self.mega_settings();client=find_client(str(self.settings.value('mega/client','')))
+        return client
+    def share_uncensored(self):
+        if self.busy:return
+        stem=self.export_name.text().strip()
+        if not stem or stem in ('.','..') or any(c in stem for c in '<>:"/\\|?*'):
+            QMessageBox.warning(self,'출력 이름','올바른 출력 폴더 이름을 입력하세요.');return
+        source=Path(self.export_folder)/stem/(stem+'_uncen')
+        if not source.is_dir():
+            folder=QFileDialog.getExistingDirectory(self,'이미 내보낸 원본용(_uncen) 폴더 선택',self.export_folder)
+            if not folder:return
+            source=Path(folder);stem=source.name.removesuffix('_uncen')
+        client=self.mega_client_path()
+        if client:self.start_mega_share(client,source,stem)
+    def retry_mega_share(self):
+        if self.busy:return
+        path,_=QFileDialog.getOpenFileName(self,'업로드 재시도 파일 선택',self.export_folder,'Photo upload (*.upload.json)')
+        if not path:return
+        client=self.mega_client_path()
+        if client:self.start_mega_share(client,state_path=path)
+    def start_mega_share(self,client_path,source=None,stem=None,state_path=None):
+        if self.busy:return
+        self.busy=True;self.export_button.setEnabled(False);self.mega_button.setEnabled(False)
+        self.progress.setRange(0,0);self.progress.show();self.status.setText('암호 압축 · MEGA 업로드 · 공유 링크 생성 중…')
+        def work():
+            client=MegaClient(client_path);client.check_login()
+            path=state_path or create_package(source,stem)
+            try:return upload_package(path,client)
+            except Exception as exc:raise RuntimeError(f'{exc}\n재시도 파일: {path}\n메뉴의 실패한 업로드 재시도를 사용하세요.') from exc
+        def complete(result):
+            self.busy=False;self.export_button.setEnabled(True);self.mega_button.setEnabled(True);self.progress.hide()
+            if result[0]:
+                self.status.setText(f'MEGA 업로드와 TXT 저장 완료: {result[1]}')
+                QMessageBox.information(self,'MEGA 공유 완료',f'링크와 압축 비밀번호를 저장했습니다.\n{result[1]}')
+            else:
+                self.status.setText('MEGA 공유 실패 · ZIP은 유지되며 재시도할 수 있습니다.')
+                QMessageBox.warning(self,'MEGA 공유 실패',str(result[1]))
+        self.run_job(self.export_pool,work,complete)
     def closeEvent(self,event):
-        if self.busy:QMessageBox.information(self,'내보내기 중','내보내기가 끝난 후 종료하세요.'); event.ignore(); return
+        if self.busy:QMessageBox.information(self,'작업 처리 중','내보내기 또는 MEGA 공유가 끝난 후 종료하세요.'); event.ignore(); return
         if not self.confirm_discard():event.ignore(); return
         if self.project:
             entry=self.current()
@@ -1459,6 +1507,14 @@ if __name__=='__main__':
         assert render_entry(read_pixels(window.current()['path']),window.current()).size==(80,60)
         for index,entry in enumerate(window.ordered()):
             export_image(entry,Path(smoke_folder.name)/f'output{index}.png','PNG')
+        from mega_dialog import MegaSettings
+        mega_settings_dialog=MegaSettings(window.settings,window);mega_settings_dialog.reject()
+        import pyzipper
+        share_source=Path(smoke_folder.name)/'smoke_uncen';share_source.mkdir();(share_source/'001.png').write_bytes(b'smoke encrypted pixels')
+        share_state=create_package(share_source,'smoke');share_data=json.loads(share_state.read_text(encoding='utf-8'))
+        with pyzipper.AESZipFile(share_data['archive']) as archive:
+            archive.setpassword(share_data['password'].encode('ascii'));assert archive.read('smoke_uncen/001.png')==b'smoke encrypted pixels'
+        assert window.mega_button.text()=='MEGA로 공유'
         window.dirty=False
         QTimer.singleShot(1000,app.quit)
     else:QTimer.singleShot(0,window.restore_last_project)

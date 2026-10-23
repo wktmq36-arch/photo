@@ -6,6 +6,52 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_mega_package_aes_password_date_and_no_overwrite(self):
+  import json,pyzipper
+  from mega_share import create_package
+  with tempfile.TemporaryDirectory() as d:
+   source=Path(d)/'05_risa_uncen';source.mkdir();(source/'001.webp').write_bytes(b'image pixels');(source/'sub').mkdir();(source/'sub/002.png').write_bytes(b'other pixels')
+   state_path=create_package(source,'05_risa',day='261023');state=json.loads(state_path.read_text(encoding='utf-8'))
+   self.assertEqual(Path(state['archive']).name,'05_risa_261023.zip');self.assertEqual(Path(state['text']).name,'05_risa_261023.txt')
+   self.assertRegex(state['password'],r'^[A-Za-z0-9]{20}$');self.assertFalse(Path(state['text']).exists())
+   with pyzipper.AESZipFile(state['archive']) as archive:
+    archive.setpassword(b'wrong password')
+    with self.assertRaises(RuntimeError):archive.read('05_risa_uncen/001.webp')
+    archive.setpassword(state['password'].encode('ascii'));self.assertEqual(archive.read('05_risa_uncen/001.webp'),b'image pixels')
+    self.assertEqual(archive.read('05_risa_uncen/sub/002.png'),b'other pixels');self.assertEqual(archive.getinfo('05_risa_uncen/001.webp').wz_aes_strength,3)
+   before=Path(state['archive']).read_bytes();second=create_package(source,'05_risa',day='261023')
+   self.assertEqual(second.name,'05_risa_261023_2.upload.json');self.assertEqual(Path(state['archive']).read_bytes(),before)
+ def test_mega_failed_upload_retry_preserves_password_and_writes_exact_text(self):
+  import json
+  from unittest.mock import Mock
+  from mega_share import create_package,upload_package
+  with tempfile.TemporaryDirectory() as d:
+   source=Path(d)/'a_uncen';source.mkdir();(source/'001.png').write_bytes(b'pixels')
+   path=create_package(source,'a',day='261023');before=json.loads(path.read_text());client=Mock();client.upload_and_link.side_effect=RuntimeError('offline')
+   with self.assertRaisesRegex(RuntimeError,'offline'):upload_package(path,client)
+   self.assertFalse(Path(before['text']).exists());self.assertTrue(Path(before['archive']).exists());self.assertEqual(json.loads(path.read_text())['status'],'failed')
+   client.upload_and_link.side_effect=None;client.upload_and_link.return_value='https://mega.nz/file/abcdefgh#Abc_def-123'
+   text=upload_package(path,client);self.assertEqual(Path(text).read_text(),f'Download Link :\nhttps://mega.nz/file/abcdefgh#Abc_def-123\n\nPassword : \n{before["password"]}\n')
+   self.assertEqual(json.loads(path.read_text())['password'],before['password']);self.assertEqual(json.loads(path.read_text())['status'],'complete')
+   client.reset_mock();upload_package(path,client);client.upload_and_link.assert_not_called()
+ def test_mega_official_client_uses_direct_executable_and_waits_for_upload(self):
+  import subprocess
+  from unittest.mock import patch
+  from mega_share import MegaClient
+  responses=[subprocess.CompletedProcess([],0,'created'),subprocess.CompletedProcess([],0,'uploaded'),subprocess.CompletedProcess([],0,'not exported'),subprocess.CompletedProcess([],0,'Exported: https://mega.nz/file/abcdefgh#Abc_def-123')]
+  with patch('mega_share.subprocess.run',side_effect=responses) as run:
+   link=MegaClient('C:/MEGA/MegaClient.exe').upload_and_link('한글 파일.zip','/PhotoExports/'+'a'*32)
+   self.assertEqual(link,'https://mega.nz/file/abcdefgh#Abc_def-123')
+   self.assertEqual([call.args[0][1] for call in run.call_args_list],['mkdir','put','export','export'])
+   self.assertTrue(all(call.kwargs['shell'] is False for call in run.call_args_list));self.assertNotIn('-q',run.call_args_list[1].args[0]);self.assertIn('-f',run.call_args_list[-1].args[0])
+ def test_mega_share_ui_runs_in_background_and_restores_controls(self):
+  from unittest.mock import patch
+  app=QApplication.instance() or QApplication([]);w=Window()
+  with patch('main.MegaClient'),patch('main.create_package',return_value='package.upload.json'),patch('main.upload_package',return_value='05_risa_261023.txt'),patch('main.QMessageBox.information') as message:
+   w.start_mega_share('MegaClient.exe',Path('a_uncen'),'a');self.assertTrue(w.busy);deadline=time.monotonic()+5
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   app.processEvents();self.assertFalse(w.busy);self.assertTrue(w.mega_button.isEnabled());self.assertTrue(w.export_button.isEnabled());message.assert_called_once()
+  w.close()
  def test_cut_freehand_and_straight_lines_undo_save_and_export(self):
   from PySide6.QtGui import QIcon
   from PySide6.QtCore import Qt,QPointF
