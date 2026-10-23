@@ -413,7 +413,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.60'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.61'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -1368,7 +1368,7 @@ class Window(QMainWindow):
                     if result[0]:self.exported_files+=1
                     else:self.errors.append('배너: '+str(result[1]))
                     self.export_next(entries,index,destination,fmt,ext,stem,outputs)
-                self.run_job(self.export_pool,lambda:export_banner(banner_entry,Path(destination)/(stem+'_banner.png')),banner_complete);return
+                self.run_job(self.export_pool,lambda:export_banner(banner_entry,Path(destination)/(stem+'_banner.png'),len(entries)),banner_complete);return
             self.busy=False; self.export_button.setEnabled(True);self.mega_button.setEnabled(True); self.progress.hide()
             message=f'{self.exported_files}개 파일 저장 완료\n{destination}'
             if outputs['cen']:message+=f'\n{stem}_cen: 모자이크 처리본'
@@ -1394,14 +1394,20 @@ class Window(QMainWindow):
         if not entry:return
         from banner_editor import BannerEditor
         try:
-            editor=BannerEditor(entry,self)
-            if editor.exec():self.set_banner(entry['id'],editor.selection())
+            editor=BannerEditor(entry,self,total_count=len(self.entries))
+            if editor.exec():self.set_banner(entry['id'],editor.selection(),editor.text_options())
         except Exception as exc:QMessageBox.warning(self,'배너 선택 실패',str(exc))
-    def set_banner(self,identifier,rect):
-        probe=dict(self.entries[identifier],banner_rect=list(rect));validate_edits(probe)
+    def set_banner(self,identifier,rect,text_options=None):
+        probe=dict(self.entries[identifier],banner_rect=list(rect))
+        if text_options is not None:probe['banner_text']=copy.deepcopy(text_options)
+        validate_edits(probe)
         self.snapshot('배너 영역 지정')
-        for entry in self.entries.values():entry.pop('banner_rect',None)
-        self.entries[identifier]['banner_rect']=list(rect);self.output_checks['banner'].setChecked(True)
+        for entry in self.entries.values():
+            if entry['id']!=identifier:entry.pop('banner_text',None)
+            entry.pop('banner_rect',None)
+        self.entries[identifier]['banner_rect']=list(rect)
+        if text_options is not None:self.entries[identifier]['banner_text']=copy.deepcopy(text_options)
+        self.output_checks['banner'].setChecked(True)
         self.status.setText('배너 영역 지정 완료 · 내보내기에서 '+self.export_name.text()+'_banner.png로 저장됩니다.')
     def mega_settings(self):
         from mega_dialog import MegaSettings
@@ -1547,6 +1553,8 @@ if __name__=='__main__':
         from banner_editor import BannerEditor
         banner_dialog=BannerEditor(window.current(),window);banner_dialog.reject()
         window.current()['banner_rect']=[.25,.25,.75,.75]
+        from banner_text import DEFAULT_TEXT
+        window.current()['banner_text']=dict(DEFAULT_TEXT)
         banner_smoke=Path(smoke_folder.name)/'smoke_banner.png';export_banner(window.current(),banner_smoke)
         with Image.open(banner_smoke) as banner_image:assert banner_image.size==(40,30) and not banner_image.getexif()
         from mega_dialog import MegaSettings

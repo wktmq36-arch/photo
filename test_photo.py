@@ -6,6 +6,37 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_banner_text_export_recounts_images_and_restores_options(self):
+  from unittest.mock import patch
+  from banner_text import DEFAULT_TEXT,render_banner_text
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths=[]
+   for index in range(3):
+    path=Path(d)/f'{index}.png';Image.new('RGBA',(600,240),'#40556b').save(path);paths.append(str(path))
+   w=Window();w.add_paths(paths[:2]);w.set_banner(w.current()['id'],[0.,0.,1.,1.],dict(DEFAULT_TEXT));project=Path(d)/'text.photo.json';w.write_project(str(project));w.close()
+   w=Window();w.export_folder=d;self.assertTrue(w.open_project(str(project)));self.assertEqual(w.current()['banner_text'],DEFAULT_TEXT);w.add_paths(paths[2:])
+   for key,check in w.output_checks.items():check.setChecked(key=='banner')
+   w.export_name.setText('a')
+   with patch('main.QMessageBox.information'):
+    w.export();deadline=time.monotonic()+10
+    while (w.busy or w.jobs) and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   expected=render_banner_text(Image.new('RGBA',(600,240),'#40556b'),DEFAULT_TEXT,3)
+   with Image.open(Path(d)/'a/a_banner.png') as output:self.assertEqual(output.tobytes(),expected.tobytes());self.assertFalse(output.getexif());self.assertNotIn('parameters',output.info)
+   self.assertNotEqual(expected.tobytes(),render_banner_text(Image.new('RGBA',(600,240),'#40556b'),DEFAULT_TEXT,2).tobytes());w.dirty=False;w.close()
+ def test_banner_typography_preview_controls_and_validation(self):
+  from banner_text import DEFAULT_TEXT,POSITIONS,render_banner_text,validate_banner_text
+  from banner_editor import BannerEditor
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'source.png';base=Image.new('RGBA',(600,240),'#40556b');base.save(path);entry={'path':str(path),'regions':[]}
+   editor=BannerEditor(entry,total_count=600);self.assertEqual(editor.text_options()['ja'],'全 {count}枚');editor.tabs.setCurrentIndex(1);editor.refresh_preview();self.assertIsNotNone(editor.preview.pixmap)
+   editor.en.setText('{count} pics');editor.position.setCurrentIndex(editor.position.findData('top-left'));editor.text_size.setValue(10);self.assertEqual(editor.text_options()['position'],'top-left')
+   editor.text_enabled.setChecked(False);self.assertEqual(render_banner_text(base,editor.text_options(),600).tobytes(),base.tobytes());editor.reject()
+   for position in POSITIONS:
+    options=dict(DEFAULT_TEXT,position=position);validate_banner_text(options);self.assertNotEqual(render_banner_text(base,options,600).tobytes(),base.tobytes())
+   for options in (dict(DEFAULT_TEXT,size=1),dict(DEFAULT_TEXT,font='unknown'),dict(DEFAULT_TEXT,ja='bad\ntext')):
+    with self.assertRaises(ValueError):validate_banner_text(options)
  def test_banner_selection_undo_project_restore_and_only_export(self):
   from unittest.mock import patch
   from imaging import read_pixels,render_entry,crop_box

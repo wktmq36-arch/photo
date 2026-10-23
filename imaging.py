@@ -2,6 +2,7 @@ from PIL import Image, ImageOps, ImageDraw, ImageFilter, ImageChops
 from pathlib import Path
 import math
 from composition import render_composition,validate_composition
+from banner_text import render_banner_text,validate_banner_text
 
 EXTENSIONS = {'.webp', '.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'}
 
@@ -25,6 +26,7 @@ def all_regions(entry):
     return [region for layer in edit_layers(entry) for region in layer.get('regions',[])]
 
 def validate_edits(entry):
+    if 'banner_text' in entry:validate_banner_text(entry['banner_text'])
     rect=entry.get('banner_rect')
     if rect is not None and (not isinstance(rect,list) or len(rect)!=4 or not all(isinstance(v,(int,float)) and math.isfinite(v) for v in rect) or not (0<=rect[0]<rect[2]<=1 and 0<=rect[1]<rect[3]<=1)):
         raise ValueError('잘못된 배너 영역')
@@ -208,9 +210,10 @@ def export_image(entry, destination, fmt, include_mosaic=True):
     result = render_entry(read_pixels(entry['path']), entry, include_mosaic=include_mosaic)
     save_pixels(result,destination,fmt)
 
-def export_banner(entry,destination):
+def export_banner(entry,destination,total_count=0):
     result=render_entry(read_pixels(entry['path']),entry)
-    save_pixels(result.crop(crop_box(result,entry['banner_rect'])),destination,'PNG')
+    banner=result.crop(crop_box(result,entry['banner_rect']))
+    save_pixels(render_banner_text(banner,entry.get('banner_text'),total_count),destination,'PNG')
 
 def save_pixels(result,destination,fmt):
     clean = Image.frombytes('RGBA', result.size, result.tobytes())
