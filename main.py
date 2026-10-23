@@ -413,7 +413,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.61'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.62'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -1441,7 +1441,7 @@ class Window(QMainWindow):
         self.progress.setRange(0,0);self.progress.show();self.status.setText('암호 압축 · MEGA 업로드 · 공유 링크 생성 중…')
         def work():
             client=MegaClient(client_path);client.check_login()
-            path=state_path or create_package(source,stem)
+            path=state_path or create_package(source,stem,remote_names=client.archive_names('/Reward'))
             try:return upload_package(path,client)
             except Exception as exc:raise RuntimeError(f'{exc}\n재시도 파일: {path}\n메뉴의 실패한 업로드 재시도를 사용하세요.') from exc
         def complete(result):

@@ -6,6 +6,17 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_mega_reward_flat_upload_and_remote_filename_collision(self):
+  import json,subprocess
+  from unittest.mock import patch
+  from mega_share import create_package,MegaClient
+  with tempfile.TemporaryDirectory() as d:
+   source=Path(d)/'a_uncen';source.mkdir();(source/'001.png').write_bytes(b'pixels')
+   path=create_package(source,'a',day='261023',remote_names={'a_261023.zip','a_261023_2.zip'});state=json.loads(path.read_text())
+   self.assertEqual(state['remote_folder'],'/Reward');self.assertEqual(Path(state['archive']).name,'a_261023_3.zip')
+  with patch('mega_share.subprocess.run',side_effect=[subprocess.CompletedProcess([],0,''),subprocess.CompletedProcess([],0,'/Reward/a_261023.zip\n/Reward/a_261023_2.zip\n')]) as run:
+   self.assertEqual(MegaClient('MegaClient.exe').archive_names(),{'a_261023.zip','a_261023_2.zip'})
+   self.assertEqual(run.call_args_list[0].args[0][1:],['mkdir','-p','/Reward']);self.assertEqual(run.call_args_list[1].args[0][1:],['find','/Reward','--type=f'])
  def test_banner_text_export_recounts_images_and_restores_options(self):
   from unittest.mock import patch
   from banner_text import DEFAULT_TEXT,render_banner_text
@@ -76,7 +87,7 @@ class Tests(unittest.TestCase):
    with patch.object(w,'mega_client_path',return_value='MegaClient.exe'),patch('main.MegaClient'),patch('main.create_package',return_value='state.upload.json') as package,patch('main.upload_package',return_value='05_risa_261023.txt'),patch('main.QMessageBox.information') as message:
     w.export();deadline=time.monotonic()+10
     while (w.busy or w.jobs) and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
-    self.assertFalse(w.busy);package.assert_called_once_with(Path(d)/'05_risa/05_risa_uncen','05_risa');message.assert_called_once();self.assertEqual(message.call_args.args[1],'내보내기 및 MEGA 공유 완료')
+    self.assertFalse(w.busy);self.assertEqual(package.call_args.args,(Path(d)/'05_risa/05_risa_uncen','05_risa'));self.assertIn('remote_names',package.call_args.kwargs);message.assert_called_once();self.assertEqual(message.call_args.args[1],'내보내기 및 MEGA 공유 완료')
    w.dirty=False;w.close()
  def test_export_auto_mega_skips_main_only_and_failed_exports(self):
   from unittest.mock import patch

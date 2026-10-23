@@ -19,7 +19,7 @@ class MegaSettings(QDialog):
         install=QPushButton('공식 설치 페이지');install.clicked.connect(lambda:QDesktopServices.openUrl(QUrl('https://mega.nz/cmd')));row.addWidget(install)
         login=QPushButton('MEGA 로그인 창');login.clicked.connect(self.login);row.addWidget(login)
         save=QPushButton('저장');save.clicked.connect(self.save);row.addWidget(save)
-        note=QLabel('업로드 위치: MEGA /PhotoExports 아래 · 압축 파일과 TXT는 내보낸 폴더 옆에 보관\n실패하면 ZIP과 .upload.json을 유지하고 메뉴에서 업로드 재시도 가능')
+        note=QLabel('업로드 위치: MEGA /Reward 바로 아래 · 압축 파일과 TXT는 내보낸 폴더 옆에 보관\n실패하면 ZIP과 .upload.json을 유지하고 메뉴에서 업로드 재시도 가능')
         note.setWordWrap(True);layout.addWidget(note)
 
     def browse(self):

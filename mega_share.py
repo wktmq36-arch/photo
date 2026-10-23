@@ -11,7 +11,6 @@ import secrets
 import shutil
 import string
 import subprocess
-import uuid
 
 import pyzipper
 from exporting import linked
@@ -49,6 +48,11 @@ class MegaClient:
     def check_login(self):
         self.run('whoami')
 
+    def archive_names(self,remote_folder='/Reward'):
+        self.run('mkdir','-p',remote_folder)
+        output=self.run('find',remote_folder,'--type=f')
+        return {line.strip().rsplit('/',1)[-1] for line in output.splitlines() if line.strip().startswith(remote_folder+'/')}
+
     def upload_and_link(self,archive,remote_folder):
         self.run('mkdir','-p',remote_folder)
         self.run('put',str(Path(archive).resolve()),remote_folder+'/',timeout=86400)
@@ -67,7 +71,7 @@ def write_state(path,state):
     temp.write_text(json.dumps(state,ensure_ascii=False,indent=2),encoding='utf-8');temp.replace(path)
 
 
-def create_package(source,stem,day=None):
+def create_package(source,stem,day=None,remote_names=()):
     source=Path(source)
     if not source.is_dir() or linked(source):
         raise ValueError('정상적인 원본용 출력 폴더를 선택하세요.')
@@ -79,18 +83,18 @@ def create_package(source,stem,day=None):
         if linked(path):raise ValueError('연결 파일/폴더는 압축하지 않습니다.')
         if path.is_file():files.append(path)
     if not files:raise ValueError('원본용 폴더가 비어 있습니다. 원본용을 먼저 내보내세요.')
-    base=f'{stem}_{day or today_suffix()}';index=1
+    base=f'{stem}_{day or today_suffix()}';index=1;remote_names=set(remote_names)
     while True:
         name=base if index==1 else f'{base}_{index}'
         archive=source.parent/(name+'.zip');text=source.parent/(name+'.txt');state_path=source.parent/(name+'.upload.json')
-        if archive.exists() or text.exists():index+=1;continue
+        if archive.exists() or text.exists() or archive.name in remote_names:index+=1;continue
         try:
             with state_path.open('x',encoding='utf-8') as stream:stream.write('{}')
             break
         except FileExistsError:index+=1
     password=''.join(secrets.choice(string.ascii_letters+string.digits) for _ in range(20))
     state={'version':1,'archive':str(archive.resolve()),'text':str(text.resolve()),'password':password,
-           'remote_folder':'/PhotoExports/'+uuid.uuid4().hex,'status':'compressing'}
+           'remote_folder':'/Reward','status':'compressing'}
     write_state(state_path,state)
     temporary=archive.with_suffix('.zip.tmp')
     try:
@@ -111,7 +115,7 @@ def upload_package(state_path,client):
     # A retry file cannot direct writes outside its own output directory.
     if archive.parent.resolve()!=state_path.parent.resolve() or text.parent.resolve()!=state_path.parent.resolve() or archive.suffix!='.zip' or text.suffix!='.txt':
         raise ValueError('잘못된 압축 작업 경로입니다.')
-    if not re.fullmatch(r'/PhotoExports/[a-f0-9]{32}',state.get('remote_folder','')) or not re.fullmatch(r'[A-Za-z0-9]{20}',state.get('password','')):
+    if (state.get('remote_folder')!='/Reward' and not re.fullmatch(r'/PhotoExports/[a-f0-9]{32}',state.get('remote_folder',''))) or not re.fullmatch(r'[A-Za-z0-9]{20}',state.get('password','')):
         raise ValueError('잘못된 업로드 작업 데이터입니다.')
     if not archive.is_file():raise ValueError('압축 파일이 없습니다.')
     try:
