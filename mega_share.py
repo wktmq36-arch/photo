@@ -107,7 +107,7 @@ def create_package(source,stem,day=None,remote_names=()):
     try:
         with pyzipper.AESZipFile(str(temporary),'w',compression=pyzipper.ZIP_STORED,encryption=pyzipper.WZ_AES,allowZip64=True) as output:
             output.setpassword(password.encode('ascii'));output.setencryption(pyzipper.WZ_AES,nbits=256)
-            for path in sorted(files):output.write(str(path),arcname=(Path(source.name)/path.relative_to(source)).as_posix())
+            for path in sorted(files):output.write(str(path),arcname=(Path(stem)/path.relative_to(source)).as_posix())
         temporary.replace(archive);state['status']='ready';write_state(state_path,state)
     except Exception:
         temporary.unlink(missing_ok=True);raise

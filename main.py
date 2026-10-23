@@ -413,7 +413,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.63'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.64'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -1563,7 +1563,7 @@ if __name__=='__main__':
         share_source=Path(smoke_folder.name)/'smoke_uncen';share_source.mkdir();(share_source/'001.png').write_bytes(b'smoke encrypted pixels')
         share_state=create_package(share_source,'smoke');share_data=json.loads(share_state.read_text(encoding='utf-8'))
         with pyzipper.AESZipFile(share_data['archive']) as archive:
-            archive.setpassword(share_data['password'].encode('ascii'));assert archive.read('smoke_uncen/001.png')==b'smoke encrypted pixels'
+            archive.setpassword(share_data['password'].encode('ascii'));assert archive.read('smoke/001.png')==b'smoke encrypted pixels'
         assert window.mega_button.text()=='MEGA로 공유'
         window.dirty=False
         QTimer.singleShot(1000,app.quit)

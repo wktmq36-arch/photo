@@ -124,9 +124,9 @@ class Tests(unittest.TestCase):
    self.assertRegex(state['password'],r'^[A-Za-z0-9]{20}$');self.assertFalse(Path(state['text']).exists())
    with pyzipper.AESZipFile(state['archive']) as archive:
     archive.setpassword(b'wrong password')
-    with self.assertRaises(RuntimeError):archive.read('05_risa_uncen/001.webp')
-    archive.setpassword(state['password'].encode('ascii'));self.assertEqual(archive.read('05_risa_uncen/001.webp'),b'image pixels')
-    self.assertEqual(archive.read('05_risa_uncen/sub/002.png'),b'other pixels');self.assertEqual(archive.getinfo('05_risa_uncen/001.webp').wz_aes_strength,3)
+    with self.assertRaises(RuntimeError):archive.read('05_risa/001.webp')
+    archive.setpassword(state['password'].encode('ascii'));self.assertEqual(archive.namelist(),['05_risa/001.webp','05_risa/sub/002.png']);self.assertTrue((source/'001.webp').is_file());self.assertEqual(archive.read('05_risa/001.webp'),b'image pixels')
+    self.assertEqual(archive.read('05_risa/sub/002.png'),b'other pixels');self.assertEqual(archive.getinfo('05_risa/001.webp').wz_aes_strength,3)
    before=Path(state['archive']).read_bytes();second=create_package(source,'05_risa',day='261023')
    self.assertEqual(second.name,'05_risa_261023_2.upload.json');self.assertEqual(Path(state['archive']).read_bytes(),before)
  def test_mega_failed_upload_retry_preserves_password_and_writes_exact_text(self):
