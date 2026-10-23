@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, 
     QMessageBox, QSpinBox, QAbstractSpinBox, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu, QDockWidget, QToolButton, QButtonGroup, QStyle, QStackedWidget, QGridLayout, QSizePolicy)
 from exporting import prepare_output
 from mega_share import MegaClient,find_client,create_package,upload_package
-from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, render_clones, ClonePreview, export_image, export_pair, crop_base, edit_layers, all_regions, validate_edits
+from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, render_clones, ClonePreview, export_image, export_banner, export_pair, crop_base, edit_layers, all_regions, validate_edits
 from composition import paired_asset,pixel_asset,render_composition,validate_composition
 
 def to_qimage(image):
@@ -413,7 +413,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.59'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.60'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -470,8 +470,8 @@ class Window(QMainWindow):
         self.export_name=QLineEdit('a');self.export_name.setMinimumWidth(90);self.export_name.setMaximumWidth(150);export_controls.addWidget(self.export_name)
         self.export_name.textEdited.connect(lambda:self.mark_export_name_changed())
         self.output_checks={}
-        for key,label in [('cen','처리본'),('uncen','원본용'),('main','메인용')]:
-            check=QCheckBox(label);check.setToolTip('모자이크를 제외한 편집 적용 · 원본 확장자 유지 · 메타데이터 제거' if key=='uncen' else label);check.setChecked(self.settings.value('export/'+key,True,type=bool))
+        for key,label in [('cen','처리본'),('uncen','원본용'),('main','메인용'),('banner','배너')]:
+            check=QCheckBox(label);check.setToolTip('모자이크를 제외한 편집 적용 · 원본 확장자 유지 · 메타데이터 제거' if key=='uncen' else label);check.setChecked(self.settings.value('export/'+key,key!='banner',type=bool))
             check.toggled.connect(lambda value,k=key:self.settings.setValue('export/'+k,value))
             self.output_checks[key]=check;export_controls.addWidget(check)
         self.auto_mega=QCheckBox('MEGA 자동 공유');self.auto_mega.setChecked(self.settings.value('mega/autoShare',True,type=bool));self.auto_mega.setToolTip('원본용 내보내기 성공 후 암호 ZIP · MEGA 업로드 · 링크 TXT까지 자동 진행')
@@ -487,6 +487,7 @@ class Window(QMainWindow):
         self.crop_mode_button=QPushButton('사진 자르기');self.crop_mode_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.crop_mode_button.clicked.connect(self.toggle_crop_mode);mode_bar.addWidget(self.crop_mode_button)
         rename_button=QPushButton('작업 이름 변경');rename_button.setFocusPolicy(Qt.FocusPolicy.NoFocus);rename_button.clicked.connect(self.rename_project);mode_bar.addWidget(rename_button)
+        banner_button=QPushButton('배너 영역 선택');banner_button.clicked.connect(self.choose_banner);mode_bar.addWidget(banner_button)
         self.tool_controls=QWidget();mode_bar.addWidget(self.tool_controls,1)
         self.header_grid.addWidget(self.mode_controls,1,0);self.header_grid.addWidget(self.export_controls,1,1)
         self.editor_stack=QStackedWidget();layout.addWidget(self.editor_stack,1)
@@ -1320,7 +1321,7 @@ class Window(QMainWindow):
         path_text='\n'.join(str(path) for path in paths)
         buttons=QMessageBox.StandardButton
         box=QMessageBox(QMessageBox.Icon.Warning,'기존 출력 내용 삭제',
-            f'{path_text}\n위에 표시한 출력 폴더만 삭제하고 새로 내보낼까요?\n체크하지 않은 출력 폴더와 그 밖의 파일은 유지됩니다.',buttons.Yes|buttons.No,self)
+            f'{path_text}\n위에 표시한 출력 폴더/파일만 삭제하고 새로 내보낼까요?\n체크하지 않은 출력 폴더와 그 밖의 파일은 유지됩니다.',buttons.Yes|buttons.No,self)
         box.button(buttons.Yes).setText('예');box.button(buttons.No).setText('아니오')
         box.setDefaultButton(buttons.No);box.setEscapeButton(buttons.No)
         return box.exec()==buttons.Yes
@@ -1330,7 +1331,9 @@ class Window(QMainWindow):
         outputs={key:check.isChecked() for key,check in self.output_checks.items()}
         if not any(outputs.values()):
             self.status.setText('내보낼 항목을 하나 이상 체크하세요.');return
-        if outputs['main'] and not outputs['cen'] and not outputs['uncen'] and not any(e.get('main_selected') for e in self.entries.values()):
+        if outputs['banner'] and not any(e.get('banner_rect') for e in self.entries.values()):
+            QMessageBox.information(self,'배너 영역 필요','그림을 선택하고 배너 영역 선택에서 출력할 부분을 지정하세요.');return
+        if outputs['main'] and not outputs['cen'] and not outputs['uncen'] and not outputs['banner'] and not any(e.get('main_selected') for e in self.entries.values()):
             self.status.setText('메인 게시용으로 체크한 그림이 없습니다.');return
         if not self.export_folder or not Path(self.export_folder).is_dir():
             if not self.choose_export_folder():return
@@ -1354,14 +1357,23 @@ class Window(QMainWindow):
         except (OSError,ValueError) as exc:
             QMessageBox.warning(self,'출력 폴더 준비 실패',str(exc));return
         entries=copy.deepcopy(self.ordered()); fmt=self.format.currentText(); ext={'PNG':'png','WEBP':'webp','JPEG':'jpg'}[fmt]
-        self.busy=True; self.export_button.setEnabled(False);self.mega_button.setEnabled(False); self.progress.setRange(0,len(entries)); self.progress.setValue(0); self.progress.show(); self.errors=[]; self.exported_main=0;self.exported_files=0
+        self.busy=True; self.export_button.setEnabled(False);self.mega_button.setEnabled(False); self.progress.setRange(0,len(entries)); self.progress.setValue(0); self.progress.show(); self.errors=[]; self.exported_main=0;self.exported_files=0;self.exported_banner=False
         self.export_next(entries,0,destination,fmt,ext,stem,outputs)
     def export_next(self,entries,index,destination,fmt,ext,stem,outputs):
         if index==len(entries):
+            if outputs.get('banner') and not self.exported_banner:
+                self.exported_banner=True
+                banner_entry=next(entry for entry in entries if entry.get('banner_rect'))
+                def banner_complete(result):
+                    if result[0]:self.exported_files+=1
+                    else:self.errors.append('배너: '+str(result[1]))
+                    self.export_next(entries,index,destination,fmt,ext,stem,outputs)
+                self.run_job(self.export_pool,lambda:export_banner(banner_entry,Path(destination)/(stem+'_banner.png')),banner_complete);return
             self.busy=False; self.export_button.setEnabled(True);self.mega_button.setEnabled(True); self.progress.hide()
             message=f'{self.exported_files}개 파일 저장 완료\n{destination}'
             if outputs['cen']:message+=f'\n{stem}_cen: 모자이크 처리본'
             if outputs['uncen']:message+=f'\n{stem}_uncen: 원본용 · 편집 적용 / 모자이크 제외 / 메타데이터 제거'
+            if outputs.get('banner'):message+=f'\n{stem}_banner.png: 선택 영역 배너'
             if self.exported_main:message+=f'\n{stem}_main: 메인 게시용 {self.exported_main}장'
             message+='\n출력 파일 메타데이터 제거 검증 완료'
             if self.errors:message+='\n\n실패:\n'+'\n'.join(self.errors[:10])
@@ -1376,6 +1388,21 @@ class Window(QMainWindow):
                 if outputs['main'] and entries[index].get('main_selected',False):self.exported_main+=1
             self.progress.setValue(index+1); self.export_next(entries,index+1,destination,fmt,ext,stem,outputs)
         self.run_job(self.export_pool,lambda:export_pair(entries[index],index+1,destination,fmt,stem,outputs,self.exported_main+1),complete)
+    def choose_banner(self):
+        self.sync_cut_editor()
+        entry=self.current()
+        if not entry:return
+        from banner_editor import BannerEditor
+        try:
+            editor=BannerEditor(entry,self)
+            if editor.exec():self.set_banner(entry['id'],editor.selection())
+        except Exception as exc:QMessageBox.warning(self,'배너 선택 실패',str(exc))
+    def set_banner(self,identifier,rect):
+        probe=dict(self.entries[identifier],banner_rect=list(rect));validate_edits(probe)
+        self.snapshot('배너 영역 지정')
+        for entry in self.entries.values():entry.pop('banner_rect',None)
+        self.entries[identifier]['banner_rect']=list(rect);self.output_checks['banner'].setChecked(True)
+        self.status.setText('배너 영역 지정 완료 · 내보내기에서 '+self.export_name.text()+'_banner.png로 저장됩니다.')
     def mega_settings(self):
         from mega_dialog import MegaSettings
         MegaSettings(self.settings,self).exec()
@@ -1517,6 +1544,11 @@ if __name__=='__main__':
         assert render_entry(read_pixels(window.current()['path']),window.current()).size==(80,60)
         for index,entry in enumerate(window.ordered()):
             export_image(entry,Path(smoke_folder.name)/f'output{index}.png','PNG')
+        from banner_editor import BannerEditor
+        banner_dialog=BannerEditor(window.current(),window);banner_dialog.reject()
+        window.current()['banner_rect']=[.25,.25,.75,.75]
+        banner_smoke=Path(smoke_folder.name)/'smoke_banner.png';export_banner(window.current(),banner_smoke)
+        with Image.open(banner_smoke) as banner_image:assert banner_image.size==(40,30) and not banner_image.getexif()
         from mega_dialog import MegaSettings
         mega_settings_dialog=MegaSettings(window.settings,window);mega_settings_dialog.reject()
         import pyzipper

@@ -18,6 +18,8 @@ def prepare_output(parent, name, sources, notify, outputs=None):
     if destination.exists() and not destination.is_dir():raise ValueError('동일한 이름의 파일이 있습니다.')
     if outputs is None:outputs={'cen':True,'uncen':True,'main':True}
     selected=[destination/(name+'_'+kind) for kind in ['cen','uncen','main'] if outputs.get(kind)]
+    banner=destination/(name+'_banner.png')
+    if outputs.get('banner'):selected.append(banner)
     if not selected:raise ValueError('출력 항목을 하나 이상 선택하세요.')
     existing=[]
     # Validate every exact recursive-delete root before confirming or mutating.
@@ -30,9 +32,12 @@ def prepare_output(parent, name, sources, notify, outputs=None):
             if Path(source).resolve().is_relative_to(resolved):
                 raise ValueError('교체할 출력 폴더 안에 작업 원본이 있습니다. 다른 출력 이름을 사용하세요.')
         if target.exists():
-            if not target.is_dir():raise ValueError('출력 폴더와 같은 이름의 파일이 있습니다.')
+            if target==banner and not target.is_file():raise ValueError('배너 파일과 같은 이름의 폴더가 있습니다.')
+            if target!=banner and not target.is_dir():raise ValueError('출력 폴더와 같은 이름의 파일이 있습니다.')
             existing.append(resolved)
     if existing and not notify(existing):return None
     destination.mkdir(exist_ok=True)
-    for target in existing:shutil.rmtree(target)
+    for target in existing:
+        if target==banner:target.unlink()
+        else:shutil.rmtree(target)
     return destination

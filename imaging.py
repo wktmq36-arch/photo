@@ -25,6 +25,9 @@ def all_regions(entry):
     return [region for layer in edit_layers(entry) for region in layer.get('regions',[])]
 
 def validate_edits(entry):
+    rect=entry.get('banner_rect')
+    if rect is not None and (not isinstance(rect,list) or len(rect)!=4 or not all(isinstance(v,(int,float)) and math.isfinite(v) for v in rect) or not (0<=rect[0]<rect[2]<=1 and 0<=rect[1]<rect[3]<=1)):
+        raise ValueError('잘못된 배너 영역')
     def valid_point(point):
         return isinstance(point,(list,tuple)) and len(point)==2 and all(isinstance(v,(int,float)) and math.isfinite(v) and 0<=v<=1 for v in point)
     for layer in edit_layers(entry):
@@ -203,6 +206,13 @@ def render_entry(image,entry,include_mosaic=True):
 
 def export_image(entry, destination, fmt, include_mosaic=True):
     result = render_entry(read_pixels(entry['path']), entry, include_mosaic=include_mosaic)
+    save_pixels(result,destination,fmt)
+
+def export_banner(entry,destination):
+    result=render_entry(read_pixels(entry['path']),entry)
+    save_pixels(result.crop(crop_box(result,entry['banner_rect'])),destination,'PNG')
+
+def save_pixels(result,destination,fmt):
     clean = Image.frombytes('RGBA', result.size, result.tobytes())
     if fmt == 'JPEG':
         background = Image.new('RGB', clean.size, 'white')

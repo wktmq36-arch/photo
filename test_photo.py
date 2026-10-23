@@ -6,6 +6,36 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_banner_selection_undo_project_restore_and_only_export(self):
+  from unittest.mock import patch
+  from imaging import read_pixels,render_entry,crop_box
+  from banner_editor import BannerEditor
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   source=Path(d)/'source.png';Image.effect_noise((200,100),100).convert('RGBA').save(source)
+   w=Window();w.export_folder=d;w.export_name.setText('05_risa');w.add_paths([str(source)])
+   entry=w.current();entry['regions']=[{'rect':[0.,0.,1.,1.],'strength':20}];rect=[.25,.2,.75,.8]
+   w.set_banner(entry['id'],rect);self.assertTrue(w.output_checks['banner'].isChecked());w.undo();self.assertNotIn('banner_rect',w.current());w.redo();self.assertEqual(w.current()['banner_rect'],rect)
+   project=Path(d)/'test.photo.json';w.write_project(str(project));w.close()
+   w=Window();w.export_folder=d;self.assertTrue(w.open_project(str(project)));self.assertEqual(w.current()['banner_rect'],rect)
+   dialog=BannerEditor(w.current(),w);self.assertEqual(dialog.selection(),rect);self.assertIn('100 × 60px',dialog.info.text());dialog.reject()
+   for key,check in w.output_checks.items():check.setChecked(key=='banner')
+   with patch('main.QMessageBox.information'),patch.object(w,'start_mega_share') as share:
+    w.export();deadline=time.monotonic()+10
+    while (w.busy or w.jobs) and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+    share.assert_not_called();self.assertFalse(w.errors)
+   output=Path(d)/'05_risa/05_risa_banner.png';self.assertTrue(output.is_file());self.assertEqual(w.exported_files,1)
+   expected=render_entry(read_pixels(source),w.current());expected=expected.crop(crop_box(expected,rect))
+   with Image.open(output) as image:self.assertEqual(image.size,(100,60));self.assertEqual(image.tobytes(),expected.tobytes());self.assertFalse(image.getexif())
+   self.assertEqual([path.name for path in output.parent.iterdir()],['05_risa_banner.png']);w.close()
+ def test_banner_replacement_preserves_unselected_outputs_and_cancel(self):
+  from exporting import prepare_output
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d)/'a';root.mkdir();banner=root/'a_banner.png';banner.write_bytes(b'old banner')
+   original=root/'a_uncen';original.mkdir();(original/'001.png').write_bytes(b'original');archive=root/'a_261023.zip';archive.write_bytes(b'archive')
+   seen=[]
+   self.assertIsNone(prepare_output(d,'a',[],lambda paths:seen.extend(paths) or False,{'banner':True}));self.assertEqual(seen,[banner]);self.assertEqual(banner.read_bytes(),b'old banner')
+   prepare_output(d,'a',[],lambda paths:True,{'banner':True});self.assertFalse(banner.exists());self.assertTrue((original/'001.png').exists());self.assertEqual(archive.read_bytes(),b'archive')
  def test_export_auto_mega_chains_after_success_and_reports_once(self):
   from unittest.mock import patch
   app=QApplication.instance() or QApplication([])
