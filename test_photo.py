@@ -6,6 +6,20 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_new_imports_natural_filename_order_preserves_manual_order_and_insertion(self):
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   paths={}
+   for name in ('10.png','2.png','1.png','A20.png','a3.png'):
+    path=Path(d)/name;Image.new('RGB',(20,20),'red').save(path);paths[name]=str(path)
+   w=Window();w.add_paths([paths[name] for name in ('10.png','2.png','1.png')])
+   self.assertEqual([Path(e['path']).name for e in w.ordered()],['1.png','2.png','10.png'])
+   w.list.move_ids([w.ordered()[2]['id']],0);w.add_paths([paths['A20.png'],paths['a3.png']],1)
+   self.assertEqual([Path(e['path']).name for e in w.ordered()],['10.png','a3.png','A20.png','1.png','2.png'])
+   w.undo();self.assertEqual([Path(e['path']).name for e in w.ordered()],['10.png','1.png','2.png'])
+   w.add_paths([d]);self.assertEqual([Path(e['path']).name for e in w.ordered()],['10.png','1.png','2.png','a3.png','A20.png'])
+   project=Path(d)/'order.photo.json';w.write_project(str(project));expected=[e['path'] for e in w.ordered()];w.close()
+   w=Window();self.assertTrue(w.open_project(str(project)));self.assertEqual([e['path'] for e in w.ordered()],expected);w.close()
  def test_mega_existing_reward_folder_requires_successful_access_check(self):
   import subprocess
   from unittest.mock import patch

@@ -1,4 +1,4 @@
-import sys, json, uuid, copy, time
+import sys, json, uuid, copy, time, re
 from datetime import datetime
 from ui_theme import apply_theme, action_icon
 from pathlib import Path
@@ -12,6 +12,12 @@ from exporting import prepare_output
 from mega_share import MegaClient,find_client,create_package,upload_package
 from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, render_clones, ClonePreview, export_image, export_banner, export_pair, crop_base, edit_layers, all_regions, validate_edits
 from composition import paired_asset,pixel_asset,render_composition,validate_composition
+
+def filename_sort_key(value):
+    path=Path(value)
+    def natural(text):return tuple((1,int(part)) if part.isdigit() else (0,part.casefold()) for part in re.split(r'(\d+)',text))
+    return natural(path.name),natural(str(path.parent)),path.name.casefold(),str(path).casefold()
+
 
 def to_qimage(image):
     rgba = image if image.mode=='RGBA' else image.convert('RGBA')
@@ -413,7 +419,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.64'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.65'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -823,7 +829,7 @@ class Window(QMainWindow):
             expanded.extend(sorted(p.rglob('*')) if p.is_dir() else [p])
         known={e['path'] for e in self.entries.values()}
         paths=[str(p.resolve()) for p in expanded if p.is_file() and p.suffix.lower() in EXTENSIONS]
-        paths=list(dict.fromkeys(p for p in paths if p not in known))
+        paths=sorted(dict.fromkeys(p for p in paths if p not in known),key=filename_sort_key)
         if not paths:return
         self.snapshot(f'그림 추가 · {len(paths)}장')
         if insertion_row is None:
