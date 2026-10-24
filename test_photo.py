@@ -6,6 +6,27 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_output_name_follows_save_save_as_and_rename_until_customized(self):
+  from unittest.mock import patch
+  import json
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   w=Window();self.assertTrue(w.export_name_follow.isChecked());self.assertEqual(w.export_name.text(),'작업')
+   first=Path(d)/'05_risa.photo.json';w.write_project(str(first));self.assertEqual(w.export_name.text(),'05_risa')
+   second=Path(d)/'06_other.photo.json';w.write_project(str(second));self.assertEqual(w.export_name.text(),'06_other')
+   with patch('main.QInputDialog.getText',return_value=('07_new',True)):self.assertTrue(w.rename_project())
+   self.assertEqual(w.export_name.text(),'07_new');w.close()
+   w=Window();self.assertTrue(w.open_project(str(Path(d)/'07_new.photo.json')));self.assertEqual(w.export_name.text(),'07_new');self.assertTrue(w.export_name_follow.isChecked())
+   w.export_name.setText('custom');self.assertFalse(w.export_name_follow.isChecked());w.write_project(str(Path(d)/'08_copy.photo.json'));self.assertEqual(w.export_name.text(),'custom')
+   w.export_name_follow.setChecked(True);self.assertEqual(w.export_name.text(),'08_copy');w.save_project();w.close()
+   w=Window();self.assertTrue(w.open_project(str(Path(d)/'08_copy.photo.json')));self.assertEqual(w.export_name.text(),'08_copy');w.close()
+ def test_old_default_export_name_migrates_but_custom_name_survives(self):
+  import json
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   for name,settings,expected in [('default',{'name':'a'},'default'),('custom',{'name':'chosen'},'chosen'),('explicit-a',{'name':'a','follow_project_name':False},'a')]:
+    path=Path(d)/(name+'.photo.json');path.write_text(json.dumps({'version':1,'images':[],'export':settings}),encoding='utf-8')
+    w=Window();self.assertTrue(w.open_project(str(path)));self.assertEqual(w.export_name.text(),expected);self.assertEqual(w.export_name_follow.isChecked(),name=='default');w.close()
  def test_shift_line_has_flat_cap_and_no_bend_when_shift_released_first(self):
   from PySide6.QtCore import Qt,QPointF,QEvent
   from PySide6.QtGui import QPixmap,QMouseEvent
@@ -353,7 +374,7 @@ class Tests(unittest.TestCase):
    def enter_name(value):
     w.export_name.setFocus();QTest.keyClick(w.export_name,Qt.Key.Key_A,Qt.KeyboardModifier.ControlModifier);QTest.keyClicks(w.export_name,value)
    enter_name('alpha');self.assertTrue(w.dirty);self.assertFalse(w.history);self.assertTrue(w.write_project(first))
-   self.assertTrue(w.new_project());self.assertEqual(w.export_name.text(),'a')
+   self.assertTrue(w.new_project());self.assertEqual(w.export_name.text(),'작업')
    enter_name('beta');w.write_project(second);self.assertTrue(w.open_project(first));self.assertEqual(w.export_name.text(),'alpha')
    self.assertTrue(w.open_project(second));self.assertEqual(w.export_name.text(),'beta')
    enter_name('edited-beta')
@@ -362,9 +383,9 @@ class Tests(unittest.TestCase):
    w.write_project(copy);enter_name('gamma');w.save_project()
    self.assertTrue(w.open_project(second));self.assertEqual(w.export_name.text(),'beta')
    self.assertTrue(w.open_project(copy));self.assertEqual(w.export_name.text(),'gamma');w.close()
-   reopened=Window();self.assertEqual(reopened.export_name.text(),'a');self.assertTrue(reopened.restore_last_project());self.assertEqual(reopened.export_name.text(),'gamma')
+   reopened=Window();self.assertEqual(reopened.export_name.text(),'작업');self.assertTrue(reopened.restore_last_project());self.assertEqual(reopened.export_name.text(),'gamma')
    legacy=Path(d)/'legacy.photo.json';legacy.write_text(json.dumps({'version':1,'images':[]}),encoding='utf-8')
-   self.assertTrue(reopened.open_project(str(legacy)));self.assertEqual(reopened.export_name.text(),'a');reopened.close()
+   self.assertTrue(reopened.open_project(str(legacy)));self.assertEqual(reopened.export_name.text(),'legacy');reopened.close()
    self.assertEqual(json.loads(Path(first).read_text(encoding='utf-8'))['export']['name'],'alpha')
  def test_crop_cover_preserves_proportions_and_never_samples_trimmed_white(self):
   from PIL import ImageOps
@@ -1179,7 +1200,7 @@ class Tests(unittest.TestCase):
    paths=[]
    for i,color in enumerate(['red','blue']):
     path=Path(d)/f'{i}.webp';Image.new('RGB',(80,60),color).save(path,lossless=True);paths.append(str(path))
-   w=Window();w.add_paths(paths);w.main_check.setChecked(True);w.list.move_ids([w.ordered()[1]['id']],0)
+   w=Window();w.export_name.setText('a');w.add_paths(paths);w.main_check.setChecked(True);w.list.move_ids([w.ordered()[1]['id']],0)
    with patch('main.QFileDialog.getExistingDirectory',return_value=d),patch('main.QInputDialog.getText',return_value=('a',True)),patch('main.QMessageBox.information'):
     w.export();deadline=time.monotonic()+15
     while (w.busy or w.jobs) and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
@@ -1253,7 +1274,7 @@ class Tests(unittest.TestCase):
    self.assertEqual(next_window.export_folder,d)
    self.assertFalse(next_window.output_checks['cen'].isChecked())
    self.assertTrue(next_window.output_checks['uncen'].isChecked())
-   self.assertEqual(next_window.export_name.text(),'a')
+   self.assertEqual(next_window.export_name.text(),'작업')
    next_window.close()
  def test_replacing_output_protects_sources_and_parent(self):
   from exporting import prepare_output
@@ -1744,7 +1765,7 @@ class Tests(unittest.TestCase):
    self.assertIsNone(prepare_output(root,'a',[],notify));notify.assert_called_once()
    self.assertEqual(old.read_bytes(),b'keep existing')
    source=root/'source.png';Image.new('RGB',(80,60),'red').save(source)
-   w=Window();w.add_paths([str(source)]);w.export_folder=d
+   w=Window();w.export_name.setText('a');w.add_paths([str(source)]);w.export_folder=d
    for answer in [QMessageBox.StandardButton.No,0]:
     with patch('main.QMessageBox.exec',return_value=answer) as question:
      w.export();question.assert_called_once()
@@ -1778,7 +1799,7 @@ class Tests(unittest.TestCase):
   app=QApplication.instance() or QApplication([])
   with tempfile.TemporaryDirectory() as d:
    source=Path(d)/'source.webp';Image.new('RGB',(80,60),'red').save(source)
-   w=Window();w.add_paths([str(source)]);w.main_check.setChecked(True);w.export_folder=d
+   w=Window();w.export_name.setText('a');w.add_paths([str(source)]);w.main_check.setChecked(True);w.export_folder=d
    with patch('main.QMessageBox.information'):
     w.export();deadline=time.monotonic()+10
     while (w.busy or w.jobs) and time.monotonic()<deadline:app.processEvents();time.sleep(.001)

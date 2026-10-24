@@ -419,7 +419,7 @@ class Canvas(QWidget):
 
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.67'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.68'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -473,8 +473,11 @@ class Window(QMainWindow):
         self.export_folder_label.setMaximumWidth(180);self.export_folder_label.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Preferred);top.addWidget(self.export_folder_label)
         top.setStretchFactor(self.export_folder_label,1)
         export_controls.addWidget(QLabel('폴더 이름'))
-        self.export_name=QLineEdit('a');self.export_name.setMinimumWidth(90);self.export_name.setMaximumWidth(150);export_controls.addWidget(self.export_name)
+        self.export_name=QLineEdit(self.pending_project_name);self.export_name.setMinimumWidth(90);self.export_name.setMaximumWidth(150);export_controls.addWidget(self.export_name)
+        self.export_name.textChanged.connect(lambda:self.mark_export_name_custom())
         self.export_name.textEdited.connect(lambda:self.mark_export_name_changed())
+        self.export_name_follow=QCheckBox('작업명');self.export_name_follow.setChecked(True);self.export_name_follow.setToolTip('작업 이름을 출력 폴더 이름으로 사용 · 이름을 직접 입력하면 해제됩니다.')
+        self.export_name_follow.toggled.connect(self.follow_project_export_name);export_controls.addWidget(self.export_name_follow)
         self.output_checks={}
         for key,label in [('cen','처리본'),('uncen','원본용'),('main','메인용'),('banner','배너')]:
             check=QCheckBox(label);check.setToolTip('모자이크를 제외한 편집 적용 · 원본 확장자 유지 · 메타데이터 제거' if key=='uncen' else label);check.setChecked(self.settings.value('export/'+key,key!='banner',type=bool))
@@ -1213,20 +1216,31 @@ class Window(QMainWindow):
         if not name or name.endswith(('.', ' ')) or any(c in '<>:"/\\|?*' or ord(c)<32 for c in name) or name.split('.')[0].upper() in reserved:
             QMessageBox.warning(self,'이름 변경 실패','파일 이름에 사용할 수 없는 이름입니다.');return False
         if not self.project:
-            self.pending_project_name=name;self.dirty=True;self.status.setText(f'새 작업 이름: {name} · 처음 저장할 때 위치를 선택하세요.');return True
+            self.pending_project_name=name
+            if self.export_name_follow.isChecked():self.set_export_name(name)
+            self.dirty=True;self.status.setText(f'새 작업 이름: {name} · 처음 저장할 때 위치를 선택하세요.');return True
         source=Path(self.project);target=source.with_name(name+'.photo.json')
         if str(source)==str(target):return True
         try:
             if target.exists() and not target.samefile(source):raise ValueError('같은 이름의 작업 파일이 이미 있습니다.')
             if not self.write_project(str(source)):return False
             source.rename(target)
-            self.project=str(target.resolve());self.recent_projects=[p for p in self.recent_projects if p!=str(source)]
+            self.project=str(target.resolve())
+            if self.export_name_follow.isChecked():self.set_export_name(name)
+            self.recent_projects=[p for p in self.recent_projects if p!=str(source)]
             self.remember_project(self.project);self.settings.setValue('session/lastProject',self.project);self.settings.sync()
             self.status.setText(f'작업 이름 변경 완료: {name}');return True
         except Exception as exc:
             QMessageBox.warning(self,'이름 변경 실패',str(exc));return False
-    def mark_export_name_changed(self):
+    def set_export_name(self,name):
+        self.export_name.blockSignals(True);self.export_name.setText(name);self.export_name.blockSignals(False)
+    def follow_project_export_name(self,enabled):
+        if enabled:self.set_export_name(Path(self.project).name.removesuffix('.photo.json') if self.project else self.pending_project_name)
         self.dirty=True
+    def mark_export_name_custom(self):
+        self.export_name_follow.blockSignals(True);self.export_name_follow.setChecked(False);self.export_name_follow.blockSignals(False)
+    def mark_export_name_changed(self):
+        self.mark_export_name_custom();self.dirty=True
     def new_project(self):
         if self.busy:
             QMessageBox.information(self,'내보내기 중','내보내기가 끝난 후 새 작업을 시작하세요.');return False
@@ -1237,8 +1251,9 @@ class Window(QMainWindow):
         self.clone_cache_key=None;self.composition_cache_key=None;self.cut_clipboard=None
         self.populate([]);self.history=[];self.history_labels=[];self.redo_stack=[];self.snapshot_cache={}
         self.project=None;self.dirty=False;self.update_history_controls();self.refresh_recent_projects()
-        self.export_name.setText('a')
         self.pending_project_name='작업'
+        self.export_name_follow.blockSignals(True);self.export_name_follow.setChecked(True);self.export_name_follow.blockSignals(False)
+        self.set_export_name(self.pending_project_name)
         self.settings.setValue('session/lastProject','');self.settings.remove('session/lastView');self.settings.sync()
         self.status.setText('새 작업 · 그림을 추가하세요.');return True
     def restore_last_project(self):
@@ -1274,8 +1289,9 @@ class Window(QMainWindow):
         try:
             entry=self.current()
             view={'current_id':entry['id'] if entry else None,'scroll':self.list.verticalScrollBar().value()}
-            temp=Path(path+'.tmp'); temp.write_text(json.dumps({'version':1,'images':self.ordered(),'view':view,'export':{'name':self.export_name.text()}},ensure_ascii=False,indent=2),encoding='utf-8'); temp.replace(path)
-            self.project=str(Path(path).resolve()); self.dirty=False;self.remember_project(self.project)
+            export_name=Path(path).name.removesuffix('.photo.json') if self.export_name_follow.isChecked() else self.export_name.text()
+            temp=Path(path+'.tmp'); temp.write_text(json.dumps({'version':1,'images':self.ordered(),'view':view,'export':{'name':export_name,'follow_project_name':self.export_name_follow.isChecked()}},ensure_ascii=False,indent=2),encoding='utf-8'); temp.replace(path)
+            self.project=str(Path(path).resolve());self.set_export_name(export_name); self.dirty=False;self.remember_project(self.project)
             self.settings.setValue('session/lastProject',self.project);self.settings.remove('session/lastView');self.settings.sync()
             self.status.setText('작업 저장 완료');return True
         except Exception as exc:
@@ -1302,7 +1318,7 @@ class Window(QMainWindow):
             data=json.loads(Path(path).read_text(encoding='utf-8')); entries=data['images']
             if data.get('version')!=1:raise ValueError('지원하지 않는 작업 파일입니다.')
             export_settings=data.get('export',{})
-            if not isinstance(export_settings,dict) or not isinstance(export_settings.get('name','a'),str):raise ValueError('잘못된 출력 폴더 이름')
+            if not isinstance(export_settings,dict) or not isinstance(export_settings.get('name','a'),str) or ('follow_project_name' in export_settings and not isinstance(export_settings['follow_project_name'],bool)):raise ValueError('잘못된 출력 폴더 이름')
             for e in entries:
                 if not isinstance(e.get('main_selected',False),bool):raise ValueError('잘못된 메인 선택 상태')
                 if not isinstance(e['path'],str) or not isinstance(e['regions'],list):raise ValueError('잘못된 작업 파일')
@@ -1311,7 +1327,10 @@ class Window(QMainWindow):
             self.finish_cut_mode(False)
             self.populate(entries); self.history=[]; self.history_labels=[]; self.redo_stack=[];self.snapshot_cache={};self.update_history_controls(); self.project=str(Path(path).resolve()); self.dirty=False
             self.restore_project_view(data.get('view',{}))
-            self.export_name.setText(export_settings.get('name','a'))
+            project_name=Path(path).name.removesuffix('.photo.json')
+            follow=export_settings.get('follow_project_name',export_settings.get('name','a') in ('a',project_name))
+            self.export_name_follow.blockSignals(True);self.export_name_follow.setChecked(follow);self.export_name_follow.blockSignals(False)
+            self.set_export_name(project_name if follow else export_settings['name'])
             self.settings.setValue('session/lastProject',self.project);self.settings.remove('session/lastView');self.settings.sync()
             self.remember_project(self.project);return True
         except Exception as exc:
