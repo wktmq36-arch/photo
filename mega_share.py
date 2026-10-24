@@ -11,6 +11,8 @@ import secrets
 import shutil
 import string
 import subprocess
+import tempfile
+import time
 
 import pyzipper
 from exporting import linked
@@ -31,18 +33,43 @@ def find_client(configured=''):
     return None
 
 
+class ShareCancelled(RuntimeError):pass
+
+
 class MegaClient:
-    def __init__(self,executable):self.executable=str(executable)
+    def __init__(self,executable,cancel_event=None,progress=None):
+        self.executable=str(executable);self.cancel_event=cancel_event;self.progress=progress
+
+    def _execute(self,command,timeout):
+        # A newly launched MEGAcmd server can inherit stdout. A file avoids
+        # communicate() waiting for EOF until that background server exits.
+        with tempfile.TemporaryFile() as output:
+            process=subprocess.Popen(command,shell=False,stdin=subprocess.DEVNULL,stdout=output,stderr=subprocess.STDOUT,
+                creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+            start=time.monotonic()
+            while process.poll() is None:
+                cancelled=self.cancel_event is not None and self.cancel_event.is_set()
+                expired=time.monotonic()-start>timeout
+                if cancelled or expired:
+                    process.kill();process.wait(timeout=5);output.seek(0);text=output.read().decode('utf-8',errors='replace')
+                    if command[1]=='put':
+                        tag=re.search(r'Tag\s*=\s*(\d+)',text,re.I)
+                        if tag:
+                            try:MegaClient(self.executable).run('transfers','-c',tag.group(1),timeout=10)
+                            except Exception:pass
+                    if cancelled:raise ShareCancelled('MEGA 공유를 취소했습니다.')
+                    raise RuntimeError('MEGA 응답 시간이 초과됐습니다. 연결을 확인한 뒤 재시도하세요.')
+                try:process.wait(timeout=.15)
+                except subprocess.TimeoutExpired:pass
+            output.seek(0)
+            return subprocess.CompletedProcess(command,process.returncode,output.read().decode('utf-8',errors='replace'))
 
     def run(self,*args,timeout=120):
-        try:
-            result=subprocess.run([self.executable,*args],shell=False,input='n\n',
-                stdout=subprocess.PIPE,stderr=subprocess.STDOUT,encoding='utf-8',errors='replace',
-                timeout=timeout,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError('MEGA 응답 시간이 초과됐습니다. 로그인·네트워크·전송 상태를 확인한 뒤 재시도하세요.') from exc
-        if result.returncode:
-            raise RuntimeError(f'MEGA {args[0]} 실패: {result.stdout[-1800:].strip()}')
+        if self.cancel_event is not None and self.cancel_event.is_set():raise ShareCancelled('MEGA 공유를 취소했습니다.')
+        phases={'whoami':'MEGA 로그인 확인','mkdir':'MEGA 폴더 확인','ls':'MEGA 폴더 확인','find':'MEGA 파일 이름 확인','put':'MEGA ZIP 업로드','export':'MEGA 공유 링크 생성'}
+        if self.progress:self.progress(phases.get(args[0],'MEGA 응답 확인'))
+        result=self._execute([self.executable,*args],timeout)
+        if result.returncode:raise RuntimeError(f'MEGA {args[0]} 실패: {result.stdout[-1800:].strip()}')
         return result.stdout
 
     def check_login(self):
@@ -62,7 +89,7 @@ class MegaClient:
 
     def upload_and_link(self,archive,remote_folder):
         self.ensure_folder(remote_folder)
-        self.run('put',str(Path(archive).resolve()),remote_folder+'/',timeout=86400)
+        self.run('put','--print-tag-at-start',str(Path(archive).resolve()),remote_folder+'/',timeout=86400)
         remote_path=remote_folder+'/'+Path(archive).name
         try:output=self.run('export',remote_path)
         except RuntimeError:output=''
@@ -78,7 +105,7 @@ def write_state(path,state):
     temp.write_text(json.dumps(state,ensure_ascii=False,indent=2),encoding='utf-8');temp.replace(path)
 
 
-def create_package(source,stem,day=None,remote_names=()):
+def create_package(source,stem,day=None,remote_names=(),cancel_event=None):
     source=Path(source)
     if not source.is_dir() or linked(source):
         raise ValueError('정상적인 원본용 출력 폴더를 선택하세요.')
@@ -107,7 +134,9 @@ def create_package(source,stem,day=None,remote_names=()):
     try:
         with pyzipper.AESZipFile(str(temporary),'w',compression=pyzipper.ZIP_STORED,encryption=pyzipper.WZ_AES,allowZip64=True) as output:
             output.setpassword(password.encode('ascii'));output.setencryption(pyzipper.WZ_AES,nbits=256)
-            for path in sorted(files):output.write(str(path),arcname=(Path(stem)/path.relative_to(source)).as_posix())
+            for path in sorted(files):
+                if cancel_event is not None and cancel_event.is_set():raise ShareCancelled('암호 압축을 취소했습니다.')
+                output.write(str(path),arcname=(Path(stem)/path.relative_to(source)).as_posix())
         temporary.replace(archive);state['status']='ready';write_state(state_path,state)
     except Exception:
         temporary.unlink(missing_ok=True);raise

@@ -1,4 +1,4 @@
-import sys, json, uuid, copy, time, re
+import sys, json, uuid, copy, time, re, threading
 from datetime import datetime
 from ui_theme import apply_theme, action_icon
 from pathlib import Path
@@ -418,8 +418,9 @@ class Canvas(QWidget):
         self.start=None; self.end=None; self.update()
 
 class Window(QMainWindow):
+    shareStage=Signal(str)
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.68'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.69'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -432,6 +433,7 @@ class Window(QMainWindow):
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.history_labels=[]; self.redo_stack=[]; self.snapshot_cache={};  self.dirty=False; self.project=None
         self.clone_cache_key=None;self.clone_cache_image=None;self.clone_live=None;self.clone_live_entry=None
         self.cut_clipboard=None;self.composition_cache_key=None;self.composition_cache_image=None
+        self.share_cancel=None;self.close_after_share=False;self.share_phase='';self.share_started=0
         self.cut_editor=None;self.crop_editor=None;self.navigation_actions=[];self.pending_project_name='작업'
         self.clone_timer=QTimer(self);self.clone_timer.setSingleShot(True);self.clone_timer.timeout.connect(self.flush_clone_preview)
         self.thumb_cache=OrderedDict();self.thumb_waiters={};self.thumb_cache_bytes=0
@@ -583,6 +585,9 @@ class Window(QMainWindow):
         splitter.handle(1).setCursor(Qt.CursorShape.SizeHorCursor)
         splitter.handle(1).setToolTip('좌우로 드래그해서 썸네일과 미리보기 너비 조절')
         self.progress=QProgressBar(); self.progress.hide(); layout.addWidget(self.progress)
+        self.share_cancel_button=QPushButton('공유 취소');self.share_cancel_button.hide();self.share_cancel_button.clicked.connect(self.cancel_mega_share);layout.addWidget(self.share_cancel_button)
+        self.shareStage.connect(self.set_share_stage)
+        self.share_timer=QTimer(self);self.share_timer.setInterval(1000);self.share_timer.timeout.connect(self.update_share_status)
         footer=QHBoxLayout();layout.addLayout(footer)
         self.status=QLabel('원본을 보존하며, 결과 파일에는 메타데이터를 저장하지 않습니다.'); footer.addWidget(self.status,1)
         self.bottom_selection_count=QLabel('선택 0장 / 전체 0장');footer.addWidget(self.bottom_selection_count)
@@ -1462,15 +1467,22 @@ class Window(QMainWindow):
         if client:self.start_mega_share(client,state_path=path)
     def start_mega_share(self,client_path,source=None,stem=None,state_path=None,export_message=None):
         if self.busy:return
+        self.share_cancel=threading.Event();cancel_event=self.share_cancel;self.share_started=time.monotonic();self.share_phase='공유 준비';self.share_timer.start();self.share_cancel_button.setEnabled(True);self.share_cancel_button.show()
         self.busy=True;self.export_button.setEnabled(False);self.mega_button.setEnabled(False)
         self.progress.setRange(0,0);self.progress.show();self.status.setText('암호 압축 · MEGA 업로드 · 공유 링크 생성 중…')
         def work():
-            client=MegaClient(client_path);client.check_login()
-            path=state_path or create_package(source,stem,remote_names=client.archive_names('/Reward'))
+            client=MegaClient(client_path,cancel_event=cancel_event,progress=self.shareStage.emit);client.check_login()
+            remote_names=client.archive_names('/Reward') if not state_path else ()
+            self.shareStage.emit('ZIP 암호 압축')
+            path=state_path or create_package(source,stem,remote_names=remote_names,cancel_event=cancel_event)
             try:return upload_package(path,client)
             except Exception as exc:raise RuntimeError(f'{exc}\n재시도 파일: {path}\n메뉴의 실패한 업로드 재시도를 사용하세요.') from exc
         def complete(result):
-            self.busy=False;self.export_button.setEnabled(True);self.mega_button.setEnabled(True);self.progress.hide()
+            self.busy=False;self.share_timer.stop();self.share_cancel_button.hide();self.share_cancel=None;self.export_button.setEnabled(True);self.mega_button.setEnabled(True);self.progress.hide()
+            if self.close_after_share:
+                self.close_after_share=False;QTimer.singleShot(0,self.close);return
+            if cancel_event.is_set():
+                self.status.setText('MEGA 공유를 취소했습니다. 이미지 출력 파일은 유지됩니다.');return
             if result[0]:
                 self.status.setText(f'MEGA 업로드와 TXT 저장 완료: {result[1]}')
                 QMessageBox.information(self,'내보내기 및 MEGA 공유 완료' if export_message else 'MEGA 공유 완료',(export_message+'\n\n' if export_message else '')+f'링크와 압축 비밀번호를 저장했습니다.\n{result[1]}')
@@ -1478,8 +1490,21 @@ class Window(QMainWindow):
                 self.status.setText('MEGA 공유 실패 · ZIP은 유지되며 재시도할 수 있습니다.')
                 QMessageBox.warning(self,'MEGA 공유 실패',('이미지 내보내기는 완료됐지만 MEGA 공유에 실패했습니다.\n' if export_message else '')+str(result[1]))
         self.run_job(self.export_pool,work,complete)
+    def set_share_stage(self,phase):
+        self.share_phase=phase;self.update_share_status()
+    def update_share_status(self):
+        if self.share_cancel is not None:self.status.setText(f'{self.share_phase} · {int(time.monotonic()-self.share_started)}초 경과')
+    def cancel_mega_share(self):
+        if self.share_cancel is not None:
+            self.share_cancel.set();self.share_phase='공유 취소 중';self.share_cancel_button.setEnabled(False);self.update_share_status()
     def closeEvent(self,event):
-        if self.busy:QMessageBox.information(self,'작업 처리 중','내보내기 또는 MEGA 공유가 끝난 후 종료하세요.'); event.ignore(); return
+        if self.busy:
+            if self.share_cancel is not None:
+                buttons=QMessageBox.StandardButton
+                if QMessageBox.question(self,'공유 취소 후 종료','MEGA 공유를 취소하고 창을 닫을까요? 이미지 출력 파일은 유지됩니다.',buttons.Yes|buttons.No,buttons.No)==buttons.Yes:
+                    self.close_after_share=True;self.cancel_mega_share()
+            else:QMessageBox.information(self,'작업 처리 중','이미지 내보내기가 끝난 후 종료하세요.')
+            event.ignore();return
         if not self.confirm_discard():event.ignore(); return
         if self.project:
             entry=self.current()

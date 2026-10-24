@@ -6,6 +6,38 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_mega_client_does_not_wait_for_inherited_stdout_handle(self):
+  import sys,signal
+  from mega_share import MegaClient
+  code="import subprocess,sys; p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(4)']); print(p.pid,flush=True)"
+  start=time.monotonic();result=MegaClient('unused')._execute([sys.executable,'-c',code],3)
+  try:self.assertLess(time.monotonic()-start,2);self.assertEqual(result.returncode,0)
+  finally:
+   try:os.kill(int(result.stdout.strip()),signal.SIGTERM)
+   except (OSError,ValueError):pass
+ def test_mega_command_cancel_kills_its_waiting_client_promptly(self):
+  import sys,threading
+  from mega_share import MegaClient,ShareCancelled
+  event=threading.Event();timer=threading.Timer(.2,event.set);timer.start();start=time.monotonic()
+  try:
+   with self.assertRaises(ShareCancelled):MegaClient('unused',cancel_event=event)._execute([sys.executable,'-c','import time;time.sleep(30)'],60)
+   self.assertLess(time.monotonic()-start,2)
+  finally:timer.cancel()
+ def test_mega_close_can_cancel_background_share_and_preserves_outputs(self):
+  from unittest.mock import patch
+  from PySide6.QtGui import QCloseEvent
+  from PySide6.QtWidgets import QMessageBox
+  from mega_share import ShareCancelled
+  app=QApplication.instance() or QApplication([]);w=Window();w.show()
+  def blocked_login(*args,**kwargs):
+   w.share_cancel.wait(5)
+   raise ShareCancelled('cancelled')
+  with patch('main.MegaClient') as client,patch('main.QMessageBox.question',return_value=QMessageBox.StandardButton.Yes),patch('main.QMessageBox.warning') as warning:
+   client.return_value.check_login.side_effect=blocked_login
+   w.start_mega_share('MegaClient.exe',Path('a_uncen'),'a');event=QCloseEvent();w.closeEvent(event);self.assertFalse(event.isAccepted());deadline=time.monotonic()+5
+   while (w.busy or w.jobs) and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   app.processEvents();self.assertFalse(w.busy);self.assertFalse(w.isVisible());self.assertIsNone(w.share_cancel);warning.assert_not_called()
+  w.close()
  def test_output_name_follows_save_save_as_and_rename_until_customized(self):
   from unittest.mock import patch
   import json
@@ -80,9 +112,9 @@ class Tests(unittest.TestCase):
   from unittest.mock import patch
   from mega_share import MegaClient
   existing=subprocess.CompletedProcess([],1,'Folder already exists: Reward');accessible=subprocess.CompletedProcess([],0,'existing.zip')
-  with patch('mega_share.subprocess.run',side_effect=[existing,accessible,subprocess.CompletedProcess([],0,'/Reward/existing.zip')]) as run:
+  with patch('mega_share.MegaClient._execute',side_effect=[existing,accessible,subprocess.CompletedProcess([],0,'/Reward/existing.zip')]) as run:
    self.assertEqual(MegaClient('MegaClient.exe').archive_names(),{'existing.zip'});self.assertEqual(run.call_args_list[1].args[0][1:],['ls','/Reward/'])
-  with patch('mega_share.subprocess.run',side_effect=[existing,subprocess.CompletedProcess([],1,'Access denied')]):
+  with patch('mega_share.MegaClient._execute',side_effect=[existing,subprocess.CompletedProcess([],1,'Access denied')]):
    with self.assertRaisesRegex(RuntimeError,'Access denied'):MegaClient('MegaClient.exe').archive_names()
  def test_mega_reward_flat_upload_and_remote_filename_collision(self):
   import json,subprocess
@@ -92,7 +124,7 @@ class Tests(unittest.TestCase):
    source=Path(d)/'a_uncen';source.mkdir();(source/'001.png').write_bytes(b'pixels')
    path=create_package(source,'a',day='261023',remote_names={'a_261023.zip','a_261023_2.zip'});state=json.loads(path.read_text())
    self.assertEqual(state['remote_folder'],'/Reward');self.assertEqual(Path(state['archive']).name,'a_261023_3.zip')
-  with patch('mega_share.subprocess.run',side_effect=[subprocess.CompletedProcess([],0,''),subprocess.CompletedProcess([],0,'/Reward/a_261023.zip\n/Reward/a_261023_2.zip\n')]) as run:
+  with patch('mega_share.MegaClient._execute',side_effect=[subprocess.CompletedProcess([],0,''),subprocess.CompletedProcess([],0,'/Reward/a_261023.zip\n/Reward/a_261023_2.zip\n')]) as run:
    self.assertEqual(MegaClient('MegaClient.exe').archive_names(),{'a_261023.zip','a_261023_2.zip'})
    self.assertEqual(run.call_args_list[0].args[0][1:],['mkdir','-p','/Reward']);self.assertEqual(run.call_args_list[1].args[0][1:],['find','/Reward','--type=f'])
  def test_banner_text_export_recounts_images_and_restores_options(self):
@@ -216,11 +248,11 @@ class Tests(unittest.TestCase):
   from unittest.mock import patch
   from mega_share import MegaClient
   responses=[subprocess.CompletedProcess([],0,'created'),subprocess.CompletedProcess([],0,'uploaded'),subprocess.CompletedProcess([],0,'not exported'),subprocess.CompletedProcess([],0,'Exported: https://mega.nz/file/abcdefgh#Abc_def-123')]
-  with patch('mega_share.subprocess.run',side_effect=responses) as run:
+  with patch('mega_share.MegaClient._execute',side_effect=responses) as run:
    link=MegaClient('C:/MEGA/MegaClient.exe').upload_and_link('한글 파일.zip','/PhotoExports/'+'a'*32)
    self.assertEqual(link,'https://mega.nz/file/abcdefgh#Abc_def-123')
    self.assertEqual([call.args[0][1] for call in run.call_args_list],['mkdir','put','export','export'])
-   self.assertTrue(all(call.kwargs['shell'] is False for call in run.call_args_list));self.assertNotIn('-q',run.call_args_list[1].args[0]);self.assertIn('-f',run.call_args_list[-1].args[0])
+   self.assertTrue(all(call.args[0][0]=='C:/MEGA/MegaClient.exe' for call in run.call_args_list));self.assertNotIn('-q',run.call_args_list[1].args[0]);self.assertIn('-f',run.call_args_list[-1].args[0])
  def test_mega_share_ui_runs_in_background_and_restores_controls(self):
   from unittest.mock import patch
   app=QApplication.instance() or QApplication([]);w=Window()
