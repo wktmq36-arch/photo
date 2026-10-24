@@ -182,14 +182,30 @@ class PanelCanvas(ImageCanvas):
         self.active=index;self.original_rect=self.cells[index]['rect'][:]
         self.action='resize' if self.handle else ('frame' if self.mode=='frame' else 'image')
         self.picked.emit((index,point,self.mode));self.update()
+    def update_ink(self,pos,modifiers):
+        point=self.point(pos)
+        if modifiers & Qt.KeyboardModifier.ShiftModifier:
+            start=self.ink_points[0];width,height=getattr(self,'ink_image_size',(self.pixmap.width(),self.pixmap.height()))
+            width,height=max(1,width-1),max(1,height-1)
+            dx,dy=(point[0]-start[0])*width,(point[1]-start[1])*height
+            if abs(dy)<=abs(dx)*.41421356237:dy=0.
+            elif abs(dx)<=abs(dy)*.41421356237:dx=0.
+            else:
+                distance=(abs(dx)+abs(dy))/2;dx=distance if dx>=0 else -distance;dy=distance if dy>=0 else -distance
+            dx,dy=dx/width,dy/height;scale=1.
+            for coordinate,delta in zip(start,(dx,dy)):
+                if delta>0:scale=min(scale,(1-coordinate)/delta)
+                elif delta<0:scale=min(scale,-coordinate/delta)
+            point=[max(0.,min(1.,start[0]+dx*scale)),max(0.,min(1.,start[1]+dy*scale))]
+            self.ink_points=[start,point]
+        elif self.action=='line':self.ink_points=self.ink_points[:1]+[point]
+        elif point!=self.ink_points[-1]:self.ink_points.append(point)
     def mouseMoveEvent(self,event):
         if self.continue_pan(event):return
         if self.start is None:return
         pos=event.position()
         if self.action in ('ink','line'):
-            point=self.point(pos)
-            if self.action=='line':self.ink_points=self.ink_points[:1]+[point]
-            elif point!=self.ink_points[-1]:self.ink_points.append(point)
+            self.update_ink(pos,event.modifiers())
         elif self.action=='resize':self.geometryChanged.emit((self.active,self.resized_rect(self.original_rect,self.point(pos),self.handle)))
         elif self.action=='frame':
             a,b=self.point(self.start),self.point(pos)
@@ -201,9 +217,7 @@ class PanelCanvas(ImageCanvas):
         if self.end_pan(event):return
         if self.start is None:return
         if self.action in ('ink','line'):
-            point=self.point(event.position())
-            if self.action=='line':self.ink_points=self.ink_points[:1]+[point]
-            elif point!=self.ink_points[-1]:self.ink_points.append(point)
+            self.update_ink(event.position(),event.modifiers())
             self.lineDrawn.emit({'points':copy.deepcopy(self.ink_points),'width':self.ink_width});self.ink_points=[]
         if self.action in ('draw','copy'):
             rect=self.rectangle(self.start,event.position())
@@ -264,7 +278,7 @@ class CutEditor(QDialog):
                          ('붙인 그림 비우기',self.remove_layer),('선택 컷 삭제',self.delete_cell),('선택 컷 앞으로',self.raise_cell),('컷 배치 초기화',self.reset),('화면 맞춤',lambda:self.canvas.reset_view())]:
             menu.addAction(label,fn)
         more_button.setMenu(menu);toolbar.addWidget(more_button)
-        self.canvas=PanelCanvas();rl.addWidget(self.canvas,1)
+        self.canvas=PanelCanvas();self.canvas.ink_image_size=self.base.size;rl.addWidget(self.canvas,1)
         self.canvas.picked.connect(self.pick);self.canvas.dragged.connect(self.move_layer);self.canvas.zoomed.connect(self.scale_layer)
         self.canvas.finished.connect(self.finish_gesture);self.canvas.copied.connect(self.copy_region)
         self.canvas.created.connect(self.add_cell);self.canvas.geometryChanged.connect(self.change_geometry)
@@ -377,8 +391,8 @@ class CutEditor(QDialog):
         self.canvas.mode=mode
         self.canvas.setFocus()
         for key,button in self.mode_buttons.items():button.setChecked(key==mode)
-        messages={'ink':'마우스로 문질러 자유롭게 검은 선 그리기 · 휠: 화면 확대 · Ctrl+드래그: 이동',
-                  'line':'드래그 시작점부터 끝점까지 검은 직선 그리기 · 휠: 화면 확대',
+        messages={'ink':'마우스로 자유선 · Shift+드래그: 수평/수직/45도 직선 · 휠: 화면 확대 · Ctrl+드래그: 이동',
+                  'line':'드래그: 직선 · Shift: 수평/수직/45도 고정 · 휠: 화면 확대',
                   'draw':'대상 그림에서 드래그하여 원하는 크기의 새 컷을 만드세요.',
                   'frame':'드래그/방향키: 컷 이동 · Shift+방향키: 10px · 모서리: 크기 조절',
                   'move':'드래그/방향키: 그림 위치 · Shift+방향키: 10px · 휠: 그림 확대/축소',

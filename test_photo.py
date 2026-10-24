@@ -6,6 +6,24 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_cut_lines_shift_snaps_in_image_pixels_for_both_tools(self):
+  from PySide6.QtCore import Qt,QPointF
+  from PySide6.QtGui import QPixmap
+  from cut_editor import PanelCanvas
+  app=QApplication.instance() or QApplication([])
+  canvas=PanelCanvas();canvas.pixmap=QPixmap(400,200);canvas.ink_image_size=(400,200);canvas.resize(800,600);canvas.update_target()
+  def pos(x,y):return QPointF(canvas.target.left()+x*canvas.target.width(),canvas.target.top()+y*canvas.target.height())
+  for mode in ('ink','line'):
+   canvas.action=mode
+   for endpoint,axis in (((.8,.25),'horizontal'),((.25,.8),'vertical'),((.55,.8),'diagonal')):
+    canvas.ink_points=[[.2,.2]];canvas.update_ink(pos(*endpoint),Qt.KeyboardModifier.ShiftModifier)
+    self.assertEqual(len(canvas.ink_points),2);a,b=canvas.ink_points
+    if axis=='horizontal':self.assertEqual(a[1],b[1])
+    elif axis=='vertical':self.assertEqual(a[0],b[0])
+    else:self.assertAlmostEqual(abs(b[0]-a[0])*399,abs(b[1]-a[1])*199)
+   canvas.ink_points=[[.2,.2]];canvas.update_ink(pos(.8,.25),Qt.KeyboardModifier.NoModifier);self.assertAlmostEqual(canvas.ink_points[-1][1],.25)
+  canvas.ink_points=[[.95,.95]];canvas.update_ink(pos(1,.99),Qt.KeyboardModifier.ShiftModifier)
+  self.assertTrue(all(0<=v<=1 for point in canvas.ink_points for v in point));canvas.close()
  def test_new_imports_natural_filename_order_preserves_manual_order_and_insertion(self):
   app=QApplication.instance() or QApplication([])
   with tempfile.TemporaryDirectory() as d:
