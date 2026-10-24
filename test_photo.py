@@ -6,6 +6,23 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_cut_border_side_combinations_and_buttons_undo(self):
+  from composition import render_composition,validate_composition,pixel_asset
+  from cut_editor import CutEditor
+  from PySide6.QtGui import QIcon
+  app=QApplication.instance() or QApplication([])
+  sides=['top','bottom','left','right'];points=[(50,0),(50,99),(0,50),(99,50)];base=Image.new('RGBA',(100,100),'blue');key,data=pixel_asset(base)
+  for pasted in (False,True):
+   for mask in range(16):
+    cell={'rect':[0.,0.,1.,1.],'border':.04,'border_sides':[side for i,side in enumerate(sides) if mask&(1<<i)]}
+    if pasted:cell['asset']=key
+    composition={'assets':{key:data},'cells':[cell]};validate_composition(composition);image=render_composition(base,composition)
+    for i,point in enumerate(points):self.assertEqual(image.getpixel(point)[:3],(0,0,0) if mask&(1<<i) else (0,0,255))
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'blue.png';base.save(path);entry={'path':str(path),'regions':[],'id':'x'};editor=CutEditor(entry,[entry],[QIcon()])
+   editor.border_buttons['top'].click();self.assertEqual(editor.cell()['border_sides'],['top']);self.assertGreater(editor.cell()['border'],0)
+   editor.border_buttons['right'].click();self.assertEqual(set(editor.cell()['border_sides']),{'top','right'});editor.undo();self.assertEqual(editor.cell()['border_sides'],['top']);editor.redo();self.assertEqual(set(editor.cell()['border_sides']),{'top','right'})
+   editor.set_border_sides([]);self.assertTrue(all(not button.isChecked() for button in editor.border_buttons.values()));editor.reject()
  def test_white_eraser_pointer_undo_crop_save_and_uncensored_export(self):
   from PySide6.QtCore import Qt,QPointF
   from PySide6.QtTest import QTest

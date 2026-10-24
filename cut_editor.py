@@ -303,6 +303,12 @@ class CutEditor(QDialog):
         for label,fn in [('그림 전체 보이게',lambda:self.fit(False)),('컷에 꽉 채우기',lambda:self.fit(True)),('-',lambda:self.scale_layer(-1)),('+',lambda:self.scale_layer(1))]:
             button=QPushButton(label);button.clicked.connect(fn);fit_controls.addWidget(button)
         self.scale_label=QLabel('');fit_controls.addWidget(self.scale_label)
+        edges=QHBoxLayout();rl.addLayout(edges);edges.addWidget(QLabel('선택 컷 테두리'));self.border_buttons={}
+        for side,label in [('top','위'),('bottom','아래'),('left','왼쪽'),('right','오른쪽')]:
+            button=QPushButton(label);button.setCheckable(True);button.setToolTip(label+' 테두리 켜기/끄기');button.clicked.connect(lambda checked,s=side:self.toggle_border_side(s,checked));edges.addWidget(button);self.border_buttons[side]=button
+        for label,sides in [('전체',['top','bottom','left','right']),('없음',[])]:
+            button=QPushButton(label);button.clicked.connect(lambda checked,s=sides:self.set_border_sides(s));edges.addWidget(button)
+        edges.addStretch()
         self.help=QLabel('드래그로 새 컷 · 모서리로 크기 조절 · 그림 위치에서 드래그/휠로 내용 조절');self.help.setWordWrap(True);rl.addWidget(self.help)
         split.addWidget(right);split.setSizes([560,820]);split.setChildrenCollapsible(False)
         bottom=QHBoxLayout();root.addLayout(bottom)
@@ -415,6 +421,8 @@ class CutEditor(QDialog):
         self.info.setText(f'컷 {len(self.canvas.cells)}개 · 선택 {self.canvas.active+1}번' if self.canvas.active>=0 else '컷을 그리거나 원래 해상도로 채우세요.')
         cell=self.cell();self.scale_label.setText(f'{cell.get("scale",1.)*100:.0f}%' if cell and 'asset' in cell else '')
         self.border.blockSignals(True);self.border.setEnabled(cell is not None);self.border.setValue(round(cell.get('border',0.)*self.base.width) if cell else 0);self.border.blockSignals(False)
+        for side,button in self.border_buttons.items():
+            button.blockSignals(True);button.setEnabled(cell is not None);button.setChecked(bool(cell and cell.get('border',0) and side in cell.get('border_sides',['top','bottom','left','right'])));button.blockSignals(False)
         self.historyChanged.emit()
     def pick(self,event):
         index,point,mode=event;self.finish_gesture();self.canvas.active=index
@@ -444,6 +452,20 @@ class CutEditor(QDialog):
     def change_gutter(self,value):
         if value==round(self.composition.get('gutter',0.)*self.base.width):return
         self.record();self.composition['gutter']=value/self.base.width;self.refresh()
+    def toggle_border_side(self,side,checked):
+        cell=self.cell()
+        if cell is None:return
+        sides=set(cell.get('border_sides',['top','bottom','left','right'])) if cell.get('border',0) else set()
+        if checked:sides.add(side)
+        else:sides.discard(side)
+        self.set_border_sides([key for key in ('top','bottom','left','right') if key in sides])
+    def set_border_sides(self,sides):
+        cell=self.cell()
+        if cell is None:return
+        if cell.get('border_sides',['top','bottom','left','right'])==sides and (not sides or cell.get('border',0)):return
+        self.record();cell['border_sides']=list(sides)
+        if sides and not cell.get('border',0):cell['border']=min(4,max(1,self.base.width//10))/self.base.width
+        self.refresh();self.canvas.setFocus()
     def change_border(self,value):
         cell=self.cell()
         if cell is None or value==round(cell.get('border',0.)*self.base.width):return

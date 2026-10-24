@@ -57,6 +57,8 @@ def validate_composition(value,check_images=False):
         if not isinstance(cell,dict):raise ValueError('잘못된 컷 데이터')
         rect=cell.get('rect')
         if not numbers(rect,4) or not (0<=rect[0]<rect[2]<=1 and 0<=rect[1]<rect[3]<=1):raise ValueError('잘못된 컷 범위')
+        sides=cell.get('border_sides',['top','bottom','left','right'])
+        if not isinstance(sides,list) or any(side not in ('top','bottom','left','right') for side in sides) or len(set(sides))!=len(sides):raise ValueError('잘못된 컷 테두리 방향')
         border=cell.get('border',0.)
         if not isinstance(border,(int,float)) or not math.isfinite(border) or not 0<=border<=.1:raise ValueError('잘못된 컷 테두리 두께')
         if not isinstance(cell.get('stretch',False),bool):raise ValueError('잘못된 이미지 맞춤 방식')
@@ -67,11 +69,16 @@ def validate_composition(value,check_images=False):
             if not numbers(cell.get('offset',[0.,0.]),2) or any(abs(v)>100 for v in cell.get('offset',[0.,0.])):raise ValueError('잘못된 컷 위치')
 
 
-def panel_border(image,box,border,inset=0):
+def panel_border(image,box,border,inset=0,sides=None):
     if not border:return
     left,top,right,bottom=box
     rect=(left+inset,top+inset,right-inset-1,bottom-inset-1)
-    if rect[2]>=rect[0] and rect[3]>=rect[1]:ImageDraw.Draw(image).rectangle(rect,outline='black',width=border)
+    if rect[2]<rect[0] or rect[3]<rect[1]:return
+    draw=ImageDraw.Draw(image);left,top,right,bottom=rect
+    sides=['top','bottom','left','right'] if sides is None else sides
+    areas={'top':(left,top,right,min(bottom,top+border-1)), 'bottom':(left,max(top,bottom-border+1),right,bottom),
+           'left':(left,top,min(right,left+border-1),bottom), 'right':(max(left,right-border+1),top,right,bottom)}
+    for side in sides:draw.rectangle(areas[side],fill='black')
 
 
 def render_composition(image,composition,cache=None,include_mosaic=True):
@@ -87,7 +94,7 @@ def render_composition(image,composition,cache=None,include_mosaic=True):
                 box=tuple(round(v*(width if i%2==0 else height)) for i,v in enumerate(cell['rect']))
                 gap=round(composition['gutter']*width)
                 if gap:ImageDraw.Draw(result).rectangle((box[0],box[1],max(box[0],box[2]-1),max(box[1],box[3]-1)),outline='white',width=gap)
-            panel_border(result,box,round(cell.get('border',0.)*width),gap if composition.get('freeform') else (gap+1)//2)
+            panel_border(result,box,round(cell.get('border',0.)*width),gap if composition.get('freeform') else (gap+1)//2,cell.get('border_sides'))
             continue
         variant=not include_mosaic and key in composition.get('uncensored_assets',{})
         cache_key=(key,'uncensored') if variant else key
@@ -108,7 +115,7 @@ def render_composition(image,composition,cache=None,include_mosaic=True):
             gap=round(composition.get('gutter',0.)*width)
             if gap:ImageDraw.Draw(background).rectangle((0,0,cw-1,ch-1),outline='white',width=gap)
         gap=round(composition.get('gutter',0.)*width)
-        panel_border(background,(0,0,cw,ch),round(cell.get('border',0.)*width),gap if composition.get('freeform') else (gap+1)//2)
+        panel_border(background,(0,0,cw,ch),round(cell.get('border',0.)*width),gap if composition.get('freeform') else (gap+1)//2,cell.get('border_sides'))
         result.paste(background,box)
     gap=round(composition.get('gutter',0.)*width)
     if gap and not composition.get('freeform'):
