@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, 
     QMessageBox, QSpinBox, QAbstractSpinBox, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu, QDockWidget, QToolButton, QButtonGroup, QStyle, QStackedWidget, QGridLayout, QSizePolicy)
 from exporting import prepare_output
 from mega_share import MegaClient,find_client,create_package,upload_package
-from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, render_clones, ClonePreview, export_image, export_banner, export_pair, crop_base, edit_layers, all_regions, validate_edits
+from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, render_clones, render_erasers, ClonePreview, export_image, export_banner, export_pair, crop_base, edit_layers, all_regions, validate_edits
 from composition import paired_asset,pixel_asset,render_composition,validate_composition
 
 def filename_sort_key(value):
@@ -35,6 +35,8 @@ def tool_icon(index):
         painter.setPen(QPen(QColor('#205a91'),2));painter.setBrush(QColor('#205a91'));painter.drawEllipse(7,16,9,9)
         painter.setPen(Qt.PenStyle.NoPen)
         for x,y in [(4,25),(10,27),(3,19)]:painter.drawRect(x,y,4,4)
+    elif index==3:
+        painter.translate(16,16);painter.rotate(-35);painter.setBrush(QColor('#e4effb'));painter.drawRoundedRect(QRectF(-10,-7,20,14),2,2);painter.drawLine(0,-7,0,7)
     else:
         painter.setBrush(QColor('#205a91'));painter.drawEllipse(11,3,10,10);painter.drawRect(13,11,6,8)
         painter.drawRoundedRect(QRectF(6,18,20,7),2,2);painter.drawRect(4,27,24,3)
@@ -59,7 +61,7 @@ class ToolPicker(QWidget):
     def __init__(self,parent=None):
         super().__init__(parent);self.index=0;self.buttons=[];self.group=QButtonGroup(self);self.group.setExclusive(True)
         layout=QHBoxLayout(self);layout.setContentsMargins(0,0,0,0);layout.setSpacing(5)
-        for index,label in enumerate(['박스 모자이크','브러시 모자이크','복제 도장 (Alt+클릭으로 기준점)']):
+        for index,label in enumerate(['박스 모자이크','브러시 모자이크','복제 도장 (Alt+클릭으로 기준점)','흰색 지우개']):
             button=QToolButton();button.setIcon(tool_icon(index));button.setIconSize(QSize(23,23));button.setCheckable(True)
             button.setToolTip(label);button.setAccessibleName(label);button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.setFixedSize(32,30);self.group.addButton(button,index);layout.addWidget(button);self.buttons.append(button)
@@ -364,6 +366,8 @@ class Canvas(QWidget):
         self.update_target();w,h=self.target.width(),self.target.height()
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         p.drawPixmap(self.target, self.pixmap, QRectF(self.pixmap.rect()))
+        if self.tool=='eraser' and self.hover is not None and self.target.contains(self.hover):
+            p.setPen(QPen(QColor('#ffffff'),1));p.setBrush(Qt.BrushStyle.NoBrush);radius=self.brush_radius*w;p.drawEllipse(self.hover,radius,radius)
         if self.tool=='clone':
             p.setPen(QPen(QColor('#ffcf66'),1))
             if self.clone_source is not None:
@@ -383,9 +387,9 @@ class Canvas(QWidget):
             self.drawing_clone=True;self.stroke=[self.normalized(event.position())]
             self.selected.emit(('clone_start',{'source':list(self.clone_source),'points':self.stroke.copy(),'radius':self.brush_radius,'softness':self.clone_softness}));return
         if self.pixmap and event.button()==Qt.MouseButton.LeftButton and self.target.contains(event.position()):
-            if self.tool=='brush':
+            if self.tool in ('brush','eraser'):
                 self.drawing_brush=True; self.stroke=[self.normalized(event.position())]
-                self.selected.emit(('brush_start',{'points':self.stroke.copy(),'radius':self.brush_radius}))
+                self.selected.emit(('eraser_start' if self.tool=='eraser' else 'brush_start',{'points':self.stroke.copy(),'radius':self.brush_radius}))
             else:
                 self.start=event.position(); self.end=self.start
     def mouseMoveEvent(self,event):
@@ -396,7 +400,7 @@ class Canvas(QWidget):
             self.stroke.append(self.normalized(event.position()));self.selected.emit(('clone_move',self.stroke.copy()));return
         if self.drawing_brush:
             self.stroke.append(self.normalized(event.position()))
-            self.selected.emit(('brush_move',self.stroke.copy()))
+            self.selected.emit(('eraser_move' if self.tool=='eraser' else 'brush_move',self.stroke.copy()))
             return
         if self.start is not None: self.end=event.position(); self.update()
     def mouseReleaseEvent(self,event):
@@ -406,7 +410,7 @@ class Canvas(QWidget):
             self.stroke.append(self.normalized(event.position()));self.drawing_clone=False;self.selected.emit(('clone_end',self.stroke.copy()));return
         if self.drawing_brush:
             self.stroke.append(self.normalized(event.position()))
-            self.selected.emit(('brush_move',self.stroke.copy()))
+            self.selected.emit(('eraser_move' if self.tool=='eraser' else 'brush_move',self.stroke.copy()))
             self.drawing_brush=False; return
         if self.start is None: return
         a,b=self.normalized(self.start); c,d=self.normalized(event.position())
@@ -420,11 +424,11 @@ class Canvas(QWidget):
 class Window(QMainWindow):
     shareStage=Signal(str)
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.69'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.70'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
-        self.tool_sizes={name:max(5,min(200,self.settings.value('tools/sizes/'+name,legacy_size,type=int))) for name in ['box','brush','clone']}
+        self.tool_sizes={name:max(5,min(200,self.settings.value('tools/sizes/'+name,legacy_size,type=int))) for name in ['box','brush','clone','eraser']}
         self.export_folder=str(self.settings.value('export/folder',''))
         try:self.recent_projects=json.loads(str(self.settings.value('projects/recent','[]')))
         except (ValueError,TypeError):self.recent_projects=[]
@@ -435,6 +439,7 @@ class Window(QMainWindow):
         self.cut_clipboard=None;self.composition_cache_key=None;self.composition_cache_image=None
         self.share_cancel=None;self.close_after_share=False;self.share_phase='';self.share_started=0
         self.cut_editor=None;self.crop_editor=None;self.navigation_actions=[];self.pending_project_name='작업'
+        self.eraser_timer=QTimer(self);self.eraser_timer.setSingleShot(True);self.eraser_timer.timeout.connect(self.render)
         self.clone_timer=QTimer(self);self.clone_timer.setSingleShot(True);self.clone_timer.timeout.connect(self.flush_clone_preview)
         self.thumb_cache=OrderedDict();self.thumb_waiters={};self.thumb_cache_bytes=0
         self.pool=QThreadPool(self); self.pool.setMaxThreadCount(4)
@@ -606,7 +611,7 @@ class Window(QMainWindow):
         for key in ['Ctrl+Y','Ctrl+Shift+Z']:
             shortcut=QShortcut(QKeySequence(key),self);shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
             shortcut.activated.connect(self.redo);self.redo_shortcuts.append(shortcut)
-        self.tool.setCurrentIndex(max(0,min(2,self.settings.value('tools/selected',0,type=int))))
+        self.tool.setCurrentIndex(max(0,min(3,self.settings.value('tools/selected',0,type=int))))
         self.strength.setValue(self.settings.value('tools/strength',20,type=int))
         self.change_tool(self.tool.currentIndex())
         self.clone_softness.setValue(self.settings.value('tools/softness',50,type=int))
@@ -657,7 +662,7 @@ class Window(QMainWindow):
         else:
             self.header_grid.addWidget(self.mode_controls,1,0);self.header_grid.addWidget(self.export_controls,1,1)
     def change_tool(self,index):
-        name=['box','brush','clone'][index]
+        name=['box','brush','clone','eraser'][index]
         self.canvas.tool=name;self.settings.setValue('tools/selected',index)
         value=self.tool_sizes[name]
         self.brush_size.blockSignals(True);self.brush_size.setValue(value);self.brush_size.blockSignals(False)
@@ -1077,8 +1082,8 @@ class Window(QMainWindow):
         entry=self.current()
         if not entry or (rect==[0.,0.,1.,1.] and not replace):return
         if not replace and len(list(edit_layers(entry)))>=64:raise ValueError('연속 자르기는 최대 63회까지 지원합니다.')
-        source=copy.deepcopy(entry['crop_source']['edits'] if replace else {key:entry[key] for key in ('regions','clones','composition','crop_source') if key in entry})
-        pending={'regions':[],'clones':[],'crop_source':{'rect':list(rect),'edits':source,'mode':mode,'anchor':list(anchor or [.5,.5])}}
+        source=copy.deepcopy(entry['crop_source']['edits'] if replace else {key:entry[key] for key in ('regions','clones','erasers','composition','crop_source') if key in entry})
+        pending={'regions':[],'clones':[],'erasers':[],'crop_source':{'rect':list(rect),'edits':source,'mode':mode,'anchor':list(anchor or [.5,.5])}}
         validate_edits(pending);self.snapshot('사진 자르기 · 비율 유지 확대')
         entry.update(pending);entry.pop('composition',None)
         self.canvas.active=-1;self.clone_cache_key=None;self.composition_cache_key=None;self.original.setChecked(False)
@@ -1115,6 +1120,7 @@ class Window(QMainWindow):
             image=self.composed_image(entry,image)
             cloned=self.clone_live.result if self.clone_live is not None and entry is self.clone_live_entry else self.committed_clones(entry,image)
             image=render_regions(cloned,entry['regions']) if entry['regions'] else cloned
+            image=render_erasers(image,entry.get('erasers',[]))
         self.canvas.pixmap=QPixmap.fromImage(to_qimage(image))
         self.canvas.regions=[] if self.original.isChecked() else entry['regions']; self.canvas.update()
     def region_event(self,event):
@@ -1125,7 +1131,14 @@ class Window(QMainWindow):
             self.status.setText('복제 도장: Alt+클릭으로 복사할 기준점을 먼저 선택하세요.');return
         if event[0]=='clone_source':
             self.status.setText('도장 기준점 선택 완료 · 지울 부위를 드래그하세요.');return
-        if event[0]=='clone_start':
+        if event[0]=='eraser_start':
+            self.snapshot('흰색 지우개');entry.setdefault('erasers',[]).append(copy.deepcopy(event[1]));self.canvas.active=-1
+        elif event[0]=='eraser_move':
+            if not entry.get('erasers'):return
+            entry['erasers'][-1]['points']=event[1]
+            if not self.eraser_timer.isActive():self.eraser_timer.start(16)
+            return
+        elif event[0]=='clone_start':
             image=self.composed_image(entry,self.cache.get(entry['path'])) if entry['path'] in self.cache else None
             if image is None:return
             self.snapshot('복제 도장')

@@ -6,6 +6,31 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_white_eraser_pointer_undo_crop_save_and_uncensored_export(self):
+  from PySide6.QtCore import Qt,QPointF
+  from PySide6.QtTest import QTest
+  from imaging import read_pixels,render_entry,export_pair
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   source=Path(d)/'source.webp';Image.new('RGBA',(300,200),(0,0,200,100)).save(source,lossless=True)
+   w=Window();w.show();w.add_paths([str(source)]);deadline=time.monotonic()+5
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.tool.setCurrentIndex(3);w.brush_size.setValue(100);self.assertEqual(w.canvas.tool,'eraser');canvas=w.canvas;canvas.update_target()
+   point=lambda x,y:QPointF(canvas.target.left()+canvas.target.width()*x,canvas.target.top()+canvas.target.height()*y).toPoint()
+   QTest.mousePress(canvas,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,point(.4,.5));QTest.mouseMove(canvas,point(.6,.5));QTest.mouseRelease(canvas,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,point(.6,.5));app.processEvents()
+   self.assertEqual(len(w.current()['erasers']),1);self.assertEqual(render_entry(read_pixels(source),w.current()).getpixel((150,100)),(255,255,255,255))
+   w.undo();self.assertFalse(w.current().get('erasers'));w.redo();self.assertEqual(len(w.current()['erasers']),1)
+   w.apply_crop([.1,.1,.9,.9]);self.assertTrue(w.current()['crop_source']['edits']['erasers']);project=Path(d)/'erase.photo.json';w.write_project(str(project));w.close()
+   w=Window();self.assertTrue(w.open_project(str(project)));self.assertEqual(w.tool.currentIndex(),3);self.assertEqual(w.brush_size.value(),100);export_pair(w.current(),1,d,'PNG','a')
+   for folder,extension in [('a_cen','png'),('a_uncen','webp')]:
+    with Image.open(Path(d)/folder/('001.'+extension)) as output:self.assertEqual(output.convert('RGBA').getpixel((150,100)),(255,255,255,255));self.assertFalse(output.getexif())
+   w.close()
+ def test_white_eraser_overrides_mosaic_with_opaque_white(self):
+  from imaging import render_entry,validate_edits
+  image=Image.effect_noise((200,120),100).convert('RGBA')
+  entry={'regions':[{'rect':[0.,0.,1.,1.],'strength':50}],'erasers':[{'points':[[.5,.5]],'radius':.05}]}
+  validate_edits(entry)
+  self.assertEqual(render_entry(image,entry).getpixel((100,60)),(255,255,255,255));self.assertEqual(render_entry(image,entry,include_mosaic=False).getpixel((100,60)),(255,255,255,255))
  def test_mega_client_does_not_wait_for_inherited_stdout_handle(self):
   import sys,signal
   from mega_share import MegaClient
@@ -1687,7 +1712,7 @@ class Tests(unittest.TestCase):
   QTest.mouseClick(w.tool.buttons[2],Qt.MouseButton.LeftButton);w.brush_size.setValue(12)
   QTest.mouseClick(w.tool.buttons[1],Qt.MouseButton.LeftButton)
   self.assertEqual(w.canvas.tool,'brush');self.assertEqual(w.brush_size.value(),85)
-  self.assertEqual([button.isChecked() for button in w.tool.buttons],[False,True,False])
+  self.assertEqual([button.isChecked() for button in w.tool.buttons],[False,True,False,False])
   self.assertTrue(all(not button.icon().isNull() for button in w.tool.buttons))
   self.assertIs(app.focusWidget(),w.list)
   QTest.mouseClick(w.tool.buttons[2],Qt.MouseButton.LeftButton)

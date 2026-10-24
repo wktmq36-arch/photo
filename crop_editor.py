@@ -31,7 +31,7 @@ class CropEditor(QWidget):
     def __init__(self,entry,parent=None):
         super().__init__(parent)
         previous=entry.get('crop_source')
-        self.replacing=bool(previous and not entry.get('regions') and not entry.get('clones') and not entry.get('composition'))
+        self.replacing=bool(previous and not entry.get('regions') and not entry.get('clones') and not entry.get('erasers') and not entry.get('composition'))
         self.image=render_entry(read_pixels(entry['path']),previous['edits'] if self.replacing else entry)
         self.anchor=list(previous.get('anchor',[.5,.5])) if self.replacing else [.5,.5]
         self.initial_rect=list(previous['rect']) if self.replacing else [0.,0.,1.,1.];self.initial_anchor=self.anchor[:]

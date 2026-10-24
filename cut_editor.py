@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (QDialog,QWidget,QVBoxLayout,QHBoxLayout,QPushButt
     QListWidget,QListWidgetItem,QSplitter,QDialogButtonBox,QMessageBox,QSpinBox,QLineEdit,
     QAbstractItemView,QMenu,QCheckBox)
 from composition import empty_composition,paired_asset,pixel_asset,decode_asset,render_composition
-from imaging import read_pixels,render_entry,render_clones,render_regions,crop_base
+from imaging import read_pixels,render_entry,render_clones,render_regions,render_erasers,crop_base
 
 
 def pixmap_for(image):
@@ -408,7 +408,7 @@ class CutEditor(QDialog):
         if not self.timer.isActive():self.timer.start()
     def refresh(self):
         self.timer.stop();image=render_composition(self.preview,self.composition,self.assets_cache)
-        image=render_clones(image,self.entry.get('clones',[]));image=render_regions(image,self.entry['regions'])
+        image=render_clones(image,self.entry.get('clones',[]));image=render_regions(image,self.entry['regions']);image=render_erasers(image,self.entry.get('erasers',[]))
         self.canvas.set_image(image);self.canvas.cells=self.composition['cells']
         self.canvas.active=min(self.canvas.active,len(self.canvas.cells)-1)
         self.gutter.blockSignals(True);self.gutter.setValue(round(self.composition.get('gutter',0.)*self.base.width));self.gutter.blockSignals(False)

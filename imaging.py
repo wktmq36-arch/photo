@@ -35,6 +35,9 @@ def validate_edits(entry):
     for layer in edit_layers(entry):
         if 'composition' in layer:validate_composition(layer['composition'],check_images=True)
         if not isinstance(layer.get('regions'),list) or not isinstance(layer.get('clones',[]),list):raise ValueError('잘못된 편집 데이터')
+        if not isinstance(layer.get('erasers',[]),list):raise ValueError('잘못된 지우개 데이터')
+        for stroke in layer.get('erasers',[]):
+            if not isinstance(stroke,dict) or not isinstance(stroke.get('points'),list) or not stroke['points'] or not all(valid_point(point) for point in stroke['points']) or not 0<stroke.get('radius',0)<=.1:raise ValueError('잘못된 지우개 좌표/크기')
         for stroke in layer.get('clones',[]):
             if not valid_point(stroke.get('source')) or not isinstance(stroke.get('points'),list) or not stroke['points'] or not all(valid_point(point) for point in stroke['points']):raise ValueError('잘못된 도장 좌표')
             if not 0<stroke.get('radius',0)<=.1 or not 0<=stroke.get('softness',.5)<=1:raise ValueError('잘못된 도장 크기')
@@ -172,6 +175,18 @@ def render_clones(image, strokes):
         result.paste(clone_patch(result,mask,box,dx,dy,sigma),box)
     return result
 
+def render_erasers(image,strokes):
+    if not strokes:return image
+    result=image.copy();width,height=image.size
+    for stroke in strokes:
+        points=[(x*width,y*height) for x,y in stroke['points']]
+        radius=max(1,stroke['radius']*width);box=clone_bounds(points,radius,0,image.size)
+        if box[2]<=box[0] or box[3]<=box[1]:continue
+        mask=Image.new('L',(box[2]-box[0],box[3]-box[1]),0);draw_clone_mask(mask,points,radius,box[:2])
+        result.paste((255,255,255,255),box,mask)
+    return result
+
+
 class ClonePreview:
     """Incremental current-stroke preview; its source stays fixed during a stroke."""
     def __init__(self,base,stroke):
@@ -204,7 +219,8 @@ def render_entry(image,entry,include_mosaic=True):
     # Retouch first; censor last, so a clone can never undo a mosaic.
     composed=render_composition(crop_base(image,entry,include_mosaic),entry.get('composition'),include_mosaic=include_mosaic)
     cloned=render_clones(composed,entry.get('clones',[]))
-    return render_regions(cloned,entry['regions']) if include_mosaic and entry['regions'] else cloned
+    censored=render_regions(cloned,entry['regions']) if include_mosaic and entry['regions'] else cloned
+    return render_erasers(censored,entry.get('erasers',[]))
 
 def export_image(entry, destination, fmt, include_mosaic=True):
     result = render_entry(read_pixels(entry['path']), entry, include_mosaic=include_mosaic)
@@ -317,7 +333,7 @@ def export_pair(entry, index, destination, fmt, stem, outputs=None, main_index=N
         if outputs.get('uncen'):
             suffix=Path(entry['path']).suffix
             original_output=target('uncen',suffix)
-            if any(entry.get(field) for field in ('crop_source','composition','clones')):
+            if any(entry.get(field) for field in ('crop_source','composition','clones','erasers')):
                 original_format={'.webp':'WEBP','.png':'PNG','.jpg':'JPEG','.jpeg':'JPEG','.bmp':'BMP','.tif':'TIFF','.tiff':'TIFF'}[suffix.lower()]
                 export_image(entry,original_output,original_format,include_mosaic=False)
             else:strip_metadata(entry['path'],original_output)
