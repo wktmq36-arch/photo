@@ -6,6 +6,22 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_shift_line_has_flat_cap_and_no_bend_when_shift_released_first(self):
+  from PySide6.QtCore import Qt,QPointF,QEvent
+  from PySide6.QtGui import QPixmap,QMouseEvent
+  from cut_editor import PanelCanvas
+  from composition import render_composition,validate_composition
+  app=QApplication.instance() or QApplication([])
+  canvas=PanelCanvas();canvas.pixmap=QPixmap(300,300);canvas.ink_image_size=(300,300);canvas.resize(600,600);canvas.update_target();canvas.action='ink';canvas.ink_width=.1
+  canvas.start=QPointF(canvas.target.left()+.5*canvas.target.width(),canvas.target.top()+.2*canvas.target.height());canvas.end=canvas.start;canvas.ink_points=[[.5,.2]]
+  end=QPointF(canvas.target.left()+.51*canvas.target.width(),canvas.target.top()+.8*canvas.target.height());canvas.update_ink(end,Qt.KeyboardModifier.ShiftModifier)
+  captured=[];canvas.lineDrawn.connect(captured.append)
+  event=QMouseEvent(QEvent.Type.MouseButtonRelease,end,end,Qt.MouseButton.LeftButton,Qt.MouseButton.NoButton,Qt.KeyboardModifier.NoModifier);canvas.mouseReleaseEvent(event)
+  self.assertEqual(captured[0]['cap'],'flat');self.assertEqual(len(captured[0]['points']),2);self.assertEqual(captured[0]['points'][0][0],captured[0]['points'][1][0])
+  composition={'assets':{},'cells':[],'lines':captured};validate_composition(composition)
+  image=render_composition(Image.new('RGBA',(300,300),'white'),composition);y=round(.2*299)
+  def black_row(row):return [x for x in range(300) if image.getpixel((x,row))[:3]==(0,0,0)]
+  self.assertEqual(black_row(y-1),[]);self.assertEqual(len(black_row(y)),30);self.assertEqual(black_row(y),black_row(y+20));canvas.close()
  def test_cut_lines_shift_snaps_in_image_pixels_for_both_tools(self):
   from PySide6.QtCore import Qt,QPointF
   from PySide6.QtGui import QPixmap

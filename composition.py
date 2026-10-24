@@ -50,6 +50,7 @@ def validate_composition(value,check_images=False):
     for line in lines:
         if not isinstance(line,dict) or not isinstance(line.get('points'),list) or not line['points'] or len(line['points'])>100000:raise ValueError('잘못된 검은선 좌표')
         if any(not numbers(point,2) or any(v<0 or v>1 for v in point) for point in line['points']):raise ValueError('잘못된 검은선 좌표')
+        if line.get('cap','round') not in ('round','flat'):raise ValueError('잘못된 검은선 끝 모양')
         width=line.get('width',0)
         if not isinstance(width,(int,float)) or not math.isfinite(width) or not 0<width<=.2:raise ValueError('잘못된 검은선 굵기')
     for cell in value['cells']:
@@ -123,5 +124,8 @@ def render_composition(image,composition,cache=None,include_mosaic=True):
         points=[(round(x*(width-1)),round(y*(height-1))) for x,y in line['points']]
         thickness=max(1,round(line['width']*width));radius=(thickness-1)/2
         if len(points)>1:draw.line(points,fill='black',width=thickness,joint='curve')
-        for x,y in (points[0],points[-1]):draw.ellipse((x-radius,y-radius,x+radius,y+radius),fill='black')
+        if line.get('cap','round')=='round':
+            for x,y in (points[0],points[-1]):draw.ellipse((x-radius,y-radius,x+radius,y+radius),fill='black')
+        elif len(points)==1:
+            x,y=points[0];left,top=x-thickness//2,y-thickness//2;draw.rectangle((left,top,left+thickness-1,top+thickness-1),fill='black')
     return result

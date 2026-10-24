@@ -140,14 +140,14 @@ class PanelCanvas(ImageCanvas):
     nudged=Signal(object);lineDrawn=Signal(object)
     def __init__(self):
         super().__init__();self.cells=[];self.active=0;self.mode='frame';self.action=None;self.show_guides=True
-        self.ink_points=[];self.ink_width=.005
+        self.ink_points=[];self.ink_width=.005;self.ink_constrained=False
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
     def paintEvent(self,event):
         painter=QPainter(self);self.paint_image(painter)
         if not self.pixmap or not self.show_guides:return
         if self.ink_points:
             painter.save();painter.setClipRect(self.target);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            painter.setPen(QPen(QColor('black'),max(1,self.ink_width*self.target.width()),Qt.PenStyle.SolidLine,Qt.PenCapStyle.RoundCap,Qt.PenJoinStyle.RoundJoin))
+            painter.setPen(QPen(QColor('black'),max(1,self.ink_width*self.target.width()),Qt.PenStyle.SolidLine,Qt.PenCapStyle.FlatCap if self.ink_constrained or self.action=='line' else Qt.PenCapStyle.RoundCap,Qt.PenJoinStyle.RoundJoin))
             path=QPainterPath()
             for index,(x,y) in enumerate(self.ink_points):
                 point=QPointF(self.target.x()+x*self.target.width(),self.target.y()+y*self.target.height())
@@ -174,7 +174,7 @@ class PanelCanvas(ImageCanvas):
         if not self.handle and not self.target.contains(pos):return
         self.start=pos;self.end=pos
         if self.mode in ('ink','line'):
-            self.action=self.mode;self.ink_points=[self.point(pos)];self.update();return
+            self.action=self.mode;self.ink_constrained=bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier);self.ink_points=[self.point(pos)];self.update();return
         if self.mode in ('draw','copy'):self.action=self.mode;self.update();return
         point=self.point(pos)
         index=self.active if self.handle else next((i for i in reversed(range(len(self.cells))) if self.image_rect(self.cells[i]['rect']).contains(pos)),-1)
@@ -183,6 +183,7 @@ class PanelCanvas(ImageCanvas):
         self.action='resize' if self.handle else ('frame' if self.mode=='frame' else 'image')
         self.picked.emit((index,point,self.mode));self.update()
     def update_ink(self,pos,modifiers):
+        self.ink_constrained=bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
         point=self.point(pos)
         if modifiers & Qt.KeyboardModifier.ShiftModifier:
             start=self.ink_points[0];width,height=getattr(self,'ink_image_size',(self.pixmap.width(),self.pixmap.height()))
@@ -217,8 +218,10 @@ class PanelCanvas(ImageCanvas):
         if self.end_pan(event):return
         if self.start is None:return
         if self.action in ('ink','line'):
-            self.update_ink(event.position(),event.modifiers())
-            self.lineDrawn.emit({'points':copy.deepcopy(self.ink_points),'width':self.ink_width});self.ink_points=[]
+            modifiers=event.modifiers()
+            if self.ink_constrained:modifiers|=Qt.KeyboardModifier.ShiftModifier
+            self.update_ink(event.position(),modifiers)
+            self.lineDrawn.emit({'points':copy.deepcopy(self.ink_points),'width':self.ink_width,'cap':'flat' if self.ink_constrained or self.action=='line' else 'round'});self.ink_points=[];self.ink_constrained=False
         if self.action in ('draw','copy'):
             rect=self.rectangle(self.start,event.position())
             if self.valid_drag(rect):
