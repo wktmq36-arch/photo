@@ -369,8 +369,8 @@ class Canvas(QWidget):
         p.drawPixmap(self.target, self.pixmap, QRectF(self.pixmap.rect()))
         if self.tool in ('brush','eraser') and self.hover is not None and self.target.contains(self.hover):
             p.setRenderHint(QPainter.RenderHint.Antialiasing);p.setBrush(Qt.BrushStyle.NoBrush);radius=self.brush_radius*w
-            p.setPen(QPen(QColor('#111111'),3));p.drawEllipse(self.hover,radius,radius)
-            p.setPen(QPen(QColor('#ffffff'),1));p.drawEllipse(self.hover,radius,radius)
+            p.setPen(QPen(QColor('#202020'),1));p.drawEllipse(self.hover,radius,radius)
+            p.setPen(QPen(QColor('#ffffff'),1,Qt.PenStyle.DashLine));p.drawEllipse(self.hover,radius,radius)
         if self.tool=='clone':
             p.setPen(QPen(QColor('#ffcf66'),1))
             if self.clone_source is not None:
@@ -429,7 +429,7 @@ class Canvas(QWidget):
 class Window(QMainWindow):
     shareStage=Signal(str)
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.74'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.75'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
