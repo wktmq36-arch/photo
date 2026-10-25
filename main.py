@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, 
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
     QMessageBox, QSpinBox, QAbstractSpinBox, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu, QDockWidget, QToolButton, QButtonGroup, QStyle, QStackedWidget, QGridLayout, QSizePolicy)
 from exporting import prepare_output
+from recovery import RecoveryStore,validate_document
 from mega_share import MegaClient,find_client,create_package,upload_package
 from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, render_clones, render_erasers, ClonePreview, export_image, export_banner, export_pair, crop_base, edit_layers, all_regions, validate_edits
 from composition import paired_asset,pixel_asset,render_composition,validate_composition
@@ -424,7 +425,7 @@ class Canvas(QWidget):
 class Window(QMainWindow):
     shareStage=Signal(str)
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.71'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.72'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -467,6 +468,7 @@ class Window(QMainWindow):
         self.history_list.itemClicked.connect(self.open_recent_project)
         add_project_button=QPushButton('작업 파일 추가');add_project_button.clicked.connect(self.add_project_files);history_layout.addWidget(add_project_button)
         find_projects_button=QPushButton('폴더에서 작업 찾기');find_projects_button.clicked.connect(self.find_projects);history_layout.addWidget(find_projects_button)
+        recovery_button=QPushButton('자동 복구 열기');recovery_button.clicked.connect(lambda:self.show_recovery(manual=True));history_layout.addWidget(recovery_button)
         self.history_dock.setWidget(history_body);self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,self.history_dock)
         self.resizeDocks([self.history_dock],[290],Qt.Orientation.Horizontal)
         history_toggle=QPushButton('저장한 작업');history_toggle.setCheckable(True);history_toggle.setChecked(True)
@@ -595,6 +597,7 @@ class Window(QMainWindow):
         self.share_timer=QTimer(self);self.share_timer.setInterval(1000);self.share_timer.timeout.connect(self.update_share_status)
         footer=QHBoxLayout();layout.addLayout(footer)
         self.status=QLabel('원본을 보존하며, 결과 파일에는 메타데이터를 저장하지 않습니다.'); footer.addWidget(self.status,1)
+        self.recovery_label=QLabel('자동 복구 켜짐');footer.addWidget(self.recovery_label)
         self.bottom_selection_count=QLabel('선택 0장 / 전체 0장');footer.addWidget(self.bottom_selection_count)
         self.list.dropped.connect(self.add_paths); self.list.currentItemChanged.connect(self.selection_changed)
         self.list.reordering.connect(lambda:self.snapshot('그림 순서 변경')); self.list.reordered.connect(self.order_changed); self.canvas.selected.connect(self.region_event)
@@ -624,6 +627,69 @@ class Window(QMainWindow):
         saved_geometry=self.settings.value('layout/windowGeometry')
         if saved_geometry is not None:self.restoreGeometry(saved_geometry)
         self._last_window_geometry=self.saveGeometry();self._placement_ready=True
+        self.recovery_store=RecoveryStore.for_settings(self.settings)
+        self.recovery_debounce=QTimer(self);self.recovery_debounce.setSingleShot(True);self.recovery_debounce.setInterval(1000);self.recovery_debounce.timeout.connect(self.write_recovery)
+        self.recovery_timer=QTimer(self);self.recovery_timer.setInterval(5000);self.recovery_timer.timeout.connect(self.write_recovery)
+        if '--smoke-test' not in sys.argv:self.recovery_timer.start()
+    def schedule_recovery(self,*args):
+        if hasattr(self,'recovery_debounce') and '--smoke-test' not in sys.argv:self.recovery_debounce.start()
+    def clear_recovery(self):
+        if not hasattr(self,'recovery_store'):return
+        self.recovery_debounce.stop()
+        try:self.recovery_store.clear();self.recovery_label.setText('자동 복구 켜짐')
+        except OSError as exc:self.recovery_label.setText('이전 복구본 정리 실패');self.recovery_label.setToolTip(str(exc))
+    def recovery_document(self):
+        entries=copy.deepcopy(self.ordered());current=self.current()
+        entry=next((item for item in entries if current and item['id']==current['id']),None)
+        if entry is not None and self.cut_editor is not None and self.has_cut_changes():entry['composition']=copy.deepcopy(self.cut_editor.composition)
+        if entry is not None and self.crop_editor is not None and self.crop_editor.has_changes():
+            editor=self.crop_editor
+            source=copy.deepcopy(entry['crop_source']['edits'] if editor.replacing else {key:entry[key] for key in ('regions','clones','erasers','composition','crop_source') if key in entry})
+            entry.update(regions=[],clones=[],erasers=[],crop_source={'rect':list(editor.rect()),'edits':source,'mode':'cover','anchor':list(editor.anchor)})
+            entry.pop('composition',None)
+        return {'version':1,'images':entries,'view':{'current_id':current['id'] if current else None,'scroll':self.list.verticalScrollBar().value()},'export':{'name':self.export_name.text(),'follow_project_name':self.export_name_follow.isChecked()}}
+    def write_recovery(self):
+        if not (self.dirty or self.has_cut_changes() or (self.crop_editor and self.crop_editor.has_changes())):return False
+        try:
+            changed=self.recovery_store.write(self.recovery_document(),self.project,Path(self.project).name.removesuffix('.photo.json') if self.project else self.pending_project_name)
+            if changed:self.recovery_label.setText('복구'+' '+datetime.now().strftime('%H:%M:%S'));self.recovery_label.setToolTip(str(self.recovery_store.current))
+            return True
+        except Exception as exc:
+            self.recovery_label.setText('자동 복구 실패');self.recovery_label.setToolTip(str(exc));return False
+    def restore_recovery(self,path):
+        record=self.recovery_store.read(path);data=record['data'];validate_document(data)
+        if self.recovery_store.session!=Path(path).name.split('.')[0]:self.clear_recovery()
+        self.finish_crop_mode(False);self.finish_cut_mode(False)
+        self.populate(copy.deepcopy(data['images']));self.history=[];self.history_labels=[];self.redo_stack=[];self.snapshot_cache={}
+        self.project=record['project'];self.pending_project_name=record['name'];settings=data.get('export',{})
+        self.export_name_follow.blockSignals(True);self.export_name_follow.setChecked(settings.get('follow_project_name',False));self.export_name_follow.blockSignals(False)
+        self.set_export_name(settings.get('name',record['name']));self.restore_project_view(data.get('view',{}));self.recovery_store.adopt(path)
+        self.dirty=True;self.update_history_controls();self.refresh_recent_projects();self.write_recovery();self.recovery_label.setText('자동 복구됨 · 미저장')
+        self.status.setText('복구본을 불러왔습니다. 원래 작업 파일은 바뀌지 않았습니다. 확인 후 Ctrl+S로 저장하세요.');return True
+    def show_recovery(self,manual=False):
+        records=self.recovery_store.candidates()
+        if manual:records=[item for item in records if item[0].name.split('.')[0]!=self.recovery_store.session]
+        if not records:
+            if manual:QMessageBox.information(self,'자동 복구','남아 있는 자동 복구본이 없습니다.')
+            return False
+        from PySide6.QtWidgets import QDialog,QDialogButtonBox
+        dialog=QDialog(self);dialog.setWindowTitle('저장하지 못한 작업 복구');dialog.resize(650,320);layout=QVBoxLayout(dialog)
+        label=QLabel('자동 복구본이 남아 있습니다. 복구해도 원래 작업 파일은 덮어쓰지 않습니다.');label.setWordWrap(True);layout.addWidget(label)
+        items=QListWidget();layout.addWidget(items)
+        for path,record in records:
+            items.addItem(f'{record["name"]}  ·  {record["captured_at"][:19].replace("T"," ")}  ·  {len(record["data"]["images"])}장')
+            items.item(items.count()-1).setToolTip(record.get('project') or '아직 저장하지 않은 새 작업')
+        items.setCurrentRow(0);buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText('선택 작업 복구');buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('지금은 건너뛰기')
+        buttons.accepted.connect(dialog.accept);buttons.rejected.connect(dialog.reject);layout.addWidget(buttons)
+        if not dialog.exec():return False
+        if manual and not self.confirm_discard():return False
+        try:return self.restore_recovery(records[items.currentRow()][0])
+        except Exception as exc:QMessageBox.warning(self,'복구 실패',str(exc));return False
+    def restore_startup(self):
+        if self.show_recovery():return True
+        return self.restore_last_project()
+
     def remember_window_geometry(self):
         if not self._placement_ready or self._restoring_placement or not self.isVisible() or self.isMinimized():return
         self._last_window_geometry=self.saveGeometry()
@@ -738,7 +804,7 @@ class Window(QMainWindow):
     def snapshot(self,label='작업 변경'):
         self.history.append(self.capture_state())
         self.history=self.history[-HISTORY_LIMIT:];self.history_labels.append(label);self.history_labels=self.history_labels[-HISTORY_LIMIT:]
-        self.redo_stack.clear();self.update_history_controls();self.dirty=True
+        self.redo_stack.clear();self.update_history_controls();self.dirty=True;self.schedule_recovery()
     def undo(self):
         if self.crop_editor is not None:return
         if self.cut_editor is not None:self.cut_editor.undo();return
@@ -895,7 +961,7 @@ class Window(QMainWindow):
         if not blocked and current is not old:self.list.currentItemChanged.emit(current,old)
         self.update_selection_count();self.list.viewport().update()
         self.status.setText(f'총 {self.list.count()}장 · 모자이크 {sum(bool(e["regions"]) for e in self.entries.values())}장 · 메인 {sum(bool(e.get("main_selected")) for e in self.entries.values())}장')
-    def order_changed(self):self.dirty=True; self.renumber()
+    def order_changed(self):self.dirty=True; self.renumber();self.schedule_recovery()
     def remove_selected(self):
         if self.crop_editor is not None:self.finish_crop_mode(True)
         if self.cut_editor is not None:self.finish_cut_mode(True)
@@ -1033,7 +1099,7 @@ class Window(QMainWindow):
             self.cut_editor=editor;self.editor_stack.addWidget(editor);self.editor_stack.setCurrentWidget(editor)
             self.tool_controls.setEnabled(False)
             editor.accepted.connect(lambda:self.finish_cut_mode(True));editor.rejected.connect(lambda:self.finish_cut_mode(False))
-            editor.historyChanged.connect(self.update_history_controls)
+            editor.historyChanged.connect(self.update_history_controls);editor.historyChanged.connect(self.schedule_recovery)
             for action in self.navigation_actions:action.setEnabled(False)
             self.cut_mode_button.setText('모자이크 모드로');self.update_history_controls();editor.canvas.setFocus()
             return editor
@@ -1124,6 +1190,7 @@ class Window(QMainWindow):
         self.canvas.pixmap=QPixmap.fromImage(to_qimage(image))
         self.canvas.regions=[] if self.original.isChecked() else entry['regions']; self.canvas.update()
     def region_event(self,event):
+        self.schedule_recovery()
         self.list.setFocus(Qt.FocusReason.OtherFocusReason)
         entry=self.current()
         if not entry or self.original.isChecked():return
@@ -1258,11 +1325,12 @@ class Window(QMainWindow):
     def mark_export_name_custom(self):
         self.export_name_follow.blockSignals(True);self.export_name_follow.setChecked(False);self.export_name_follow.blockSignals(False)
     def mark_export_name_changed(self):
-        self.mark_export_name_custom();self.dirty=True
+        self.mark_export_name_custom();self.dirty=True;self.schedule_recovery()
     def new_project(self):
         if self.busy:
             QMessageBox.information(self,'내보내기 중','내보내기가 끝난 후 새 작업을 시작하세요.');return False
         if not self.confirm_discard():return False
+        self.clear_recovery()
         self.finish_crop_mode(False)
         self.finish_cut_mode(False)
         self.clone_timer.stop();self.clone_live=None;self.clone_live_entry=None
@@ -1309,7 +1377,7 @@ class Window(QMainWindow):
             view={'current_id':entry['id'] if entry else None,'scroll':self.list.verticalScrollBar().value()}
             export_name=Path(path).name.removesuffix('.photo.json') if self.export_name_follow.isChecked() else self.export_name.text()
             temp=Path(path+'.tmp'); temp.write_text(json.dumps({'version':1,'images':self.ordered(),'view':view,'export':{'name':export_name,'follow_project_name':self.export_name_follow.isChecked()}},ensure_ascii=False,indent=2),encoding='utf-8'); temp.replace(path)
-            self.project=str(Path(path).resolve());self.set_export_name(export_name); self.dirty=False;self.remember_project(self.project)
+            self.project=str(Path(path).resolve());self.set_export_name(export_name); self.dirty=False;self.clear_recovery();self.remember_project(self.project)
             self.settings.setValue('session/lastProject',self.project);self.settings.remove('session/lastView');self.settings.sync()
             self.status.setText('작업 저장 완료');return True
         except Exception as exc:
@@ -1341,6 +1409,7 @@ class Window(QMainWindow):
                 if not isinstance(e.get('main_selected',False),bool):raise ValueError('잘못된 메인 선택 상태')
                 if not isinstance(e['path'],str) or not isinstance(e['regions'],list):raise ValueError('잘못된 작업 파일')
                 validate_edits(e)
+            self.clear_recovery()
             self.finish_crop_mode(False)
             self.finish_cut_mode(False)
             self.populate(entries); self.history=[]; self.history_labels=[]; self.redo_stack=[];self.snapshot_cache={};self.update_history_controls(); self.project=str(Path(path).resolve()); self.dirty=False
@@ -1523,6 +1592,7 @@ class Window(QMainWindow):
             entry=self.current()
             self.settings.setValue('session/lastProject',self.project)
             self.settings.setValue('session/lastView',json.dumps({'path':self.project,'current_id':entry['id'] if entry else None,'scroll':self.list.verticalScrollBar().value()}))
+        self.clear_recovery();self.recovery_timer.stop();self.recovery_debounce.stop()
         geometry=self._last_window_geometry if self.isMinimized() else self.saveGeometry()
         if geometry is not None:self.settings.setValue('layout/windowGeometry',geometry)
         self.settings.setValue('layout/splitter',self.splitter.saveState())
@@ -1628,7 +1698,12 @@ if __name__=='__main__':
         with pyzipper.AESZipFile(share_data['archive']) as archive:
             archive.setpassword(share_data['password'].encode('ascii'));assert archive.read('smoke/001.png')==b'smoke encrypted pixels'
         assert window.mega_button.text()=='MEGA로 공유'
+        window.recovery_store=RecoveryStore(Path(smoke_folder.name)/'recovery');window.dirty=True
+        assert window.write_recovery();records=window.recovery_store.candidates();assert len(records)==1
+        assert len(records[0][1]['data']['images'])==len(window.entries)
+        assert window.restore_recovery(records[0][0]) and window.dirty
+        window.clear_recovery()
         window.dirty=False
         QTimer.singleShot(1000,app.quit)
-    else:QTimer.singleShot(0,window.restore_last_project)
+    else:QTimer.singleShot(0,window.restore_startup)
     sys.exit(app.exec())

@@ -6,6 +6,55 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_recovery_survives_abrupt_process_exit_without_changing_saved_project(self):
+  import sys,subprocess,json
+  from recovery import RecoveryStore
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   script="""
+import os,sys
+from pathlib import Path
+from PIL import Image
+from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QSettings
+import main
+from recovery import RecoveryStore
+root=Path(sys.argv[1]);settings=QSettings(str(root/'child.ini'),QSettings.Format.IniFormat);main.QSettings=lambda *a:settings
+app=QApplication([]);w=main.Window();w.recovery_store=RecoveryStore(root/'recovery')
+source=root/'source.png';Image.new('RGBA',(100,80),'red').save(source);w.add_paths([str(source)]);w.write_project(str(root/'saved.photo.json'))
+w.strength.setValue(31);w.region_event(('add',[.1,.1,.8,.8]));assert w.write_recovery()
+os._exit(7)
+"""
+   result=subprocess.run([sys.executable,'-c',script,d],capture_output=True,timeout=15);self.assertEqual(result.returncode,7,result.stderr.decode(errors='replace'))
+   project=Path(d)/'saved.photo.json';before=project.read_bytes();self.assertEqual(json.loads(before)['images'][0]['regions'],[])
+   w=Window();w.recovery_store=RecoveryStore(Path(d)/'recovery');records=w.recovery_store.candidates();self.assertEqual(len(records),1)
+   self.assertTrue(w.restore_recovery(records[0][0]));self.assertTrue(w.dirty);self.assertEqual(w.project,str(project));self.assertEqual(w.current()['regions'][0]['strength'],31);self.assertEqual(project.read_bytes(),before)
+   w.current()['regions'][0]['strength']=60;self.assertTrue(w.save_project());self.assertEqual(json.loads(project.read_bytes())['images'][0]['regions'][0]['strength'],60);self.assertEqual(w.recovery_store.candidates(),[]);w.close()
+ def test_recovery_falls_back_to_previous_generation_and_deduplicates(self):
+  from recovery import RecoveryStore
+  import copy
+  with tempfile.TemporaryDirectory() as d:
+   store=RecoveryStore(d);data={'version':1,'images':[],'export':{'name':'a'}}
+   self.assertTrue(store.write(data,None,'작업'));stamp=store.current.stat().st_mtime_ns;self.assertFalse(store.write(data,None,'작업'));self.assertEqual(store.current.stat().st_mtime_ns,stamp)
+   data=copy.deepcopy(data);data['export']['name']='new';store.write(data,None,'작업');store.current.write_text('[]',encoding='utf-8')
+   records=store.candidates();self.assertEqual(len(records),1);self.assertEqual(records[0][1]['data']['export']['name'],'a');store.adopt(records[0][0]);self.assertTrue(store.write(data,None,'작업'));self.assertEqual(store.read(store.current)['data']['export']['name'],'new');store.clear();self.assertEqual(store.candidates(),[])
+ def test_normal_discard_removes_recovery_but_never_overwrites_project(self):
+  from unittest.mock import patch
+  from PySide6.QtWidgets import QMessageBox
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   source=Path(d)/'source.png';Image.new('RGBA',(100,80),'blue').save(source);project=Path(d)/'saved.photo.json'
+   w=Window();w.add_paths([str(source)]);w.write_project(str(project));before=project.read_bytes();w.region_event(('add',[.1,.1,.5,.5]));self.assertTrue(w.write_recovery());self.assertTrue(w.recovery_store.current.is_file())
+   with patch('main.QMessageBox.exec',return_value=QMessageBox.StandardButton.Discard):w.close()
+   self.assertEqual(project.read_bytes(),before);self.assertEqual(w.recovery_store.candidates(),[])
+ def test_recovery_captures_inline_drafts_without_applying_or_saving(self):
+  from recovery import validate_document
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'source.png';Image.new('RGBA',(100,80),'red').save(path);w=Window();w.add_paths([str(path)])
+   editor=w.edit_cuts();editor.border.setValue(4);data=w.recovery_document();validate_document(data);self.assertIn('composition',data['images'][0]);self.assertNotIn('composition',w.current());self.assertIs(w.cut_editor,editor);w.finish_cut_mode(False)
+   crop=w.start_crop_mode();crop.trims['top'].setValue(10);data=w.recovery_document();validate_document(data);self.assertIn('crop_source',data['images'][0]);self.assertNotIn('crop_source',w.current());self.assertIs(w.crop_editor,crop)
+   w.finish_crop_mode(False);w.dirty=False;w.close()
  def test_cut_border_side_combinations_and_buttons_undo(self):
   from composition import render_composition,validate_composition,pixel_asset
   from cut_editor import CutEditor
