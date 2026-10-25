@@ -425,7 +425,7 @@ class Canvas(QWidget):
 class Window(QMainWindow):
     shareStage=Signal(str)
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.72'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.73'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -1150,14 +1150,21 @@ class Window(QMainWindow):
         if not replace and len(list(edit_layers(entry)))>=64:raise ValueError('연속 자르기는 최대 63회까지 지원합니다.')
         source=copy.deepcopy(entry['crop_source']['edits'] if replace else {key:entry[key] for key in ('regions','clones','erasers','composition','crop_source') if key in entry})
         pending={'regions':[],'clones':[],'erasers':[],'crop_source':{'rect':list(rect),'edits':source,'mode':mode,'anchor':list(anchor or [.5,.5])}}
-        validate_edits(pending);self.snapshot('사진 자르기 · 비율 유지 확대')
+        validate_edits(pending)
+        candidate=dict(entry,**pending);candidate.pop('composition',None)
+        image=self.cache.get(entry['path'])
+        if image is not None:render_entry(image,candidate)
+        self.snapshot('사진 자르기 · 비율 유지 확대')
         entry.update(pending);entry.pop('composition',None)
         self.canvas.active=-1;self.clone_cache_key=None;self.composition_cache_key=None;self.original.setChecked(False)
         self.render();self.renumber();self.status.setText('원래 해상도에 맞춰 비율을 유지해 확대했습니다. Ctrl+Z로 취소')
     def finish_crop_mode(self,apply=True):
         editor=self.crop_editor
         if editor is None:return
-        if apply and editor.has_changes():self.apply_crop(editor.rect(),editor.anchor,editor.replacing)
+        if apply and editor.has_changes():
+            try:self.apply_crop(editor.rect(),editor.anchor,editor.replacing)
+            except Exception as exc:
+                QMessageBox.warning(self,'사진 자르기 실패',str(exc));return
         editor.preview_timer.stop()
         self.crop_editor=None;self.editor_stack.setCurrentWidget(self.splitter);self.editor_stack.removeWidget(editor);editor.deleteLater()
         for action in self.navigation_actions:action.setEnabled(True)

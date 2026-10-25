@@ -59,14 +59,15 @@ def stretch_crop(image,rect):
 
 def cover_box(image,rect,anchor=(.5,.5)):
     left,top,right,bottom=crop_box(image,rect);w,h=right-left,bottom-top
-    scale=max(image.width/w,image.height/h);visible_w,visible_h=image.width/scale,image.height/scale
-    x=left+(w-visible_w)*anchor[0];y=top+(h-visible_h)*anchor[1]
+    scale=max(image.width/w,image.height/h);visible_w,visible_h=min(float(w),image.width/scale),min(float(h),image.height/scale)
+    x=max(float(left),min(float(right)-visible_w,left+(w-visible_w)*anchor[0]));y=max(float(top),min(float(bottom)-visible_h,top+(h-visible_h)*anchor[1]))
     return (x,y,x+visible_w,y+visible_h)
 
 def cover_crop(image,rect,anchor=(.5,.5),size=None):
     left,top,right,bottom=crop_box(image,rect);box=cover_box(image,rect,anchor)
     selected=image.crop((left,top,right,bottom))
-    return selected.resize(size or image.size,Image.Resampling.LANCZOS,box=(box[0]-left,box[1]-top,box[2]-left,box[3]-top))
+    local=(max(0.,box[0]-left),max(0.,box[1]-top),min(float(selected.width),box[2]-left),min(float(selected.height),box[3]-top))
+    return selected.resize(size or image.size,Image.Resampling.LANCZOS,box=local)
 
 def crop_base(image,entry,include_mosaic=True):
     crop=entry.get('crop_source')

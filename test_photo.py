@@ -6,6 +6,31 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_cover_crop_roundoff_never_makes_negative_pillow_box(self):
+  from imaging import cover_crop,cover_box,crop_box
+  import random
+  random.seed(13)
+  for width,height,w,h in ((1536,1536,47,47),(1009,1537,31,47),(997,613,7,5)):
+   image=Image.new('RGBA',(width,height),'red');rect=[0.,0.,w/width,h/height]
+   self.assertEqual(cover_crop(image,rect,(.5,.5),(31,29)).getpixel((15,14)),(255,0,0,255))
+  for width,height in ((1536,1536),(1009,1537),(997,613),(127,251)):
+   image=Image.new('RGBA',(width,height),'red')
+   for _ in range(80):
+    left=random.randrange(width);top=random.randrange(height);right=random.randrange(left+1,width+1);bottom=random.randrange(top+1,height+1)
+    rect=[left/width,top/height,right/width,bottom/height]
+    for anchor in ((0.,0.),(.5,.5),(1.,1.)):
+     result=cover_crop(image,rect,anchor,(31,29));self.assertEqual(result.size,(31,29));self.assertEqual(result.getpixel((15,14)),(255,0,0,255))
+ def test_failed_crop_preflight_keeps_document_and_cancel_works(self):
+  from unittest.mock import patch
+  import copy
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'image.png';Image.new('RGBA',(100,80),'red').save(path);w=Window();w.add_paths([str(path)]);deadline=time.monotonic()+5
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   editor=w.start_crop_mode();editor.trims['top'].setValue(5);before=copy.deepcopy(w.current());history=len(w.history)
+   with patch('main.render_entry',side_effect=ValueError('render failed')),patch('main.QMessageBox.warning') as warning:w.finish_crop_mode(True)
+   self.assertEqual(w.current(),before);self.assertEqual(len(w.history),history);self.assertIs(w.crop_editor,editor);warning.assert_called_once()
+   w.finish_crop_mode(False);self.assertIsNone(w.crop_editor);self.assertEqual(w.current(),before);w.dirty=False;w.close()
  def test_recovery_survives_abrupt_process_exit_without_changing_saved_project(self):
   import sys,subprocess,json
   from recovery import RecoveryStore
