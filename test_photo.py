@@ -6,6 +6,31 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_main_export_strength_override_keeps_cen_and_work_unchanged(self):
+  import copy
+  from imaging import export_pair,render_entry
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'source.png';Image.effect_noise((400,300),100).convert('RGB').save(path)
+   entry={'path':str(path),'main_selected':True,'regions':[{'rect':[0.,0.,1.,1.],'strength':8}]}
+   before=copy.deepcopy(entry)
+   export_pair(entry,1,d,'PNG','a',{'cen':True,'main':True,'main_strength':70})
+   with Image.open(Path(d)/'a_cen/001.png') as cen,Image.open(Path(d)/'a_main/001.png') as main:
+    self.assertNotEqual(cen.tobytes(),main.tobytes())
+    expected=copy.deepcopy(entry);expected['regions'][0]['strength']=70
+    self.assertEqual(main.convert('RGBA').tobytes(),render_entry(Image.open(path).convert('RGBA'),expected).tobytes())
+   self.assertEqual(entry,before)
+ def test_main_export_strength_cancel_does_not_prepare_output(self):
+  from unittest.mock import patch
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'source.png';Image.new('RGB',(80,60),'red').save(path)
+   w=Window();w.add_paths([str(path)]);w.current()['main_selected']=True;w.export_folder=d
+   for key,check in w.output_checks.items():check.setChecked(key=='main')
+   with patch('main.QInputDialog.getInt',return_value=(40,False)) as prompt,patch('main.prepare_output') as prepare:
+    w.export();prompt.assert_called_once();prepare.assert_not_called();self.assertFalse(w.busy)
+   deadline=time.monotonic()+5
+   while w.jobs and time.monotonic()<deadline:app.processEvents();time.sleep(.001)
+   w.dirty=False;w.close()
  def test_cut_source_thumbnails_update_when_background_loading_finishes(self):
   from unittest.mock import patch
   from main import to_qimage
@@ -1106,6 +1131,7 @@ os._exit(7)
   settings=QSettings(str(Path(self.settings_folder.name)/'settings.ini'),QSettings.Format.IniFormat)
   settings.setValue('mega/autoShare',False)
   mock=patch('main.QSettings',return_value=settings);mock.start();self.addCleanup(mock.stop)
+  prompt=patch('main.QInputDialog.getInt',return_value=(20,True));prompt.start();self.addCleanup(prompt.stop)
 
  def test_export(self):
   with tempfile.TemporaryDirectory() as d:

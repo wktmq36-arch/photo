@@ -429,7 +429,7 @@ class Canvas(QWidget):
 class Window(QMainWindow):
     shareStage=Signal(str)
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.77'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.78'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -572,7 +572,7 @@ class Window(QMainWindow):
         self.original=QPushButton('원본 비교'); self.original.setCheckable(True); tools.addWidget(self.original); self.original.toggled.connect(self.render)
         batch_tools=QHBoxLayout(); bottom_layout.addLayout(batch_tools)
         self.batch_strength_button=QPushButton('선택 사진 강도 일괄 변경')
-        self.batch_strength_button.clicked.connect(self.batch_strength_dialog); batch_tools.addWidget(self.batch_strength_button)
+        self.batch_strength_button.clicked.connect(self.batch_strength_dialog); brush_tools.insertWidget(brush_tools.count()-1,self.batch_strength_button)
         reset_button=QPushButton('모자이크 초기화');reset_menu=QMenu(reset_button)
         reset_menu.addAction('현재 그림의 모자이크 모두 제거',lambda:self.clear_mosaics([self.current()['id']] if self.current() else []))
         reset_menu.addAction('선택한 그림들의 모자이크 모두 제거',lambda:self.clear_mosaics([item.data(Qt.ItemDataRole.UserRole) for item in self.list.selectedItems()]))
@@ -1470,6 +1470,13 @@ class Window(QMainWindow):
         reserved={'CON','PRN','AUX','NUL'}|{f'COM{i}' for i in range(1,10)}|{f'LPT{i}' for i in range(1,10)}
         if stem.split('.')[0].upper() in reserved or any(ord(c)<32 for c in stem):
             QMessageBox.warning(self,'폴더 이름','사용할 수 없는 폴더 이름입니다.');return
+        if outputs['main']:
+            strength,accepted=QInputDialog.getInt(self,'메인용 모자이크 강도',
+                '메인용으로 출력할 모든 그림의 모자이크 강도 (2~100):\n작업의 영역과 개별 강도는 유지됩니다.',
+                self.settings.value('export/mainStrength',self.strength.value(),type=int),2,100,1)
+            if not accepted:return
+            outputs['main_strength']=strength
+            self.settings.setValue('export/mainStrength',strength)
         self.export_mega_client=None
         if outputs['uncen'] and self.auto_mega.isChecked():
             self.export_mega_client=self.mega_client_path()

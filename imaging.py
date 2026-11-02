@@ -343,10 +343,17 @@ def export_pair(entry, index, destination, fmt, stem, outputs=None, main_index=N
             processed=target('cen','.'+ext);export_image(entry,processed,fmt)
         if outputs.get('main') and entry.get('main_selected',False):
             main_output=target('main','.'+ext,f'{main_index if main_index is not None else index:03d}')
-            if processed is not None:
+            main_entry=entry
+            if outputs.get('main_strength') is not None:
+                import copy
+                strength=outputs['main_strength']
+                if not isinstance(strength,int) or not 2<=strength<=100:raise ValueError('잘못된 메인 모자이크 강도')
+                main_entry=copy.deepcopy(entry)
+                for region in all_regions(main_entry):region['strength']=strength
+            if processed is not None and main_entry is entry:
                 import shutil
                 shutil.copyfile(processed,main_output)
-            else:export_image(entry,main_output,fmt)
+            else:export_image(main_entry,main_output,fmt)
     except Exception:
         for path in created:path.unlink(missing_ok=True)
         raise
