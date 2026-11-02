@@ -340,6 +340,9 @@ class CutEditor(QDialog):
             self.sources.setCurrentRow(row)
             QTimer.singleShot(0,lambda:self.sources.scrollToItem(self.sources.currentItem(),QListWidget.ScrollHint.PositionAtCenter))
         self.set_mode('frame' if entry.get('composition') else 'draw');self.refresh()
+    def update_source_thumbnail(self,entry_ids,pixmap):
+        for row,entry in enumerate(self.entries):
+            if entry['id'] in entry_ids:self.sources.item(row).setIcon(pixmap)
     def toggle_source(self,widget):
         widget.setVisible(not widget.isVisible());self.source_toggle.setText('원본 접기' if widget.isVisible() else '원본 펼치기')
     def keyPressEvent(self,event):

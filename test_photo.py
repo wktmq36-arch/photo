@@ -6,6 +6,20 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_cut_source_thumbnails_update_when_background_loading_finishes(self):
+  from unittest.mock import patch
+  from main import to_qimage
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'image.png';Image.new('RGB',(80,60),'red').save(path)
+   w=Window()
+   with patch.object(w,'run_job'):w.add_paths([str(path)])
+   editor=w.edit_cuts();self.assertTrue(editor.sources.item(0).icon().isNull())
+   info=path.stat();key=(str(path),info.st_size,info.st_mtime_ns)
+   w.thumb_ready(key,(True,to_qimage(Image.new('RGBA',(80,60),'red'))))
+   self.assertFalse(editor.sources.item(0).icon().isNull())
+   self.assertFalse(w.list.item(0).icon().isNull())
+   w.finish_cut_mode(False);w.dirty=False;w.close()
  def test_cut_reopen_selects_current_source_with_clipboard_and_keeps_previous_cuts(self):
   import copy
   from cut_editor import CutEditor

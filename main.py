@@ -429,7 +429,7 @@ class Canvas(QWidget):
 class Window(QMainWindow):
     shareStage=Signal(str)
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.76'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.77'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -899,6 +899,8 @@ class Window(QMainWindow):
         for row in range(self.list.count()):
             item=self.list.item(row)
             if item.data(Qt.ItemDataRole.UserRole) in waiters:item.setIcon(QPixmap.fromImage(image))
+        if self.cut_editor is not None:
+            self.cut_editor.update_source_thumbnail(waiters,QPixmap.fromImage(image))
     def add_dialog(self):
         files,_=QFileDialog.getOpenFileNames(self,'그림 추가','','Images (*.webp *.png *.jpg *.jpeg *.bmp *.tif *.tiff)'); self.add_paths(files)
     def folder_dialog(self):
