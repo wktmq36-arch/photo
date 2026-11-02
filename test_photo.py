@@ -6,6 +6,29 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_cut_reopen_selects_current_source_with_clipboard_and_keeps_previous_cuts(self):
+  import copy
+  from cut_editor import CutEditor
+  from composition import paired_asset
+  from PySide6.QtGui import QIcon
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   red=Path(d)/'red.png';blue=Path(d)/'blue.png'
+   Image.new('RGB',(80,60),'red').save(red);Image.new('RGB',(80,60),'blue').save(blue)
+   entries=[{'id':str(i),'path':str(red),'regions':[]} for i in range(30)]
+   entries[-1]['path']=str(blue);entry=entries[-1];icons=[QIcon() for _ in entries]
+   clip=paired_asset(Image.new('RGBA',(20,20),'red'),Image.new('RGBA',(20,20),'red'))
+   editor=CutEditor(entry,entries,icons,clip);editor.show();app.processEvents()
+   self.assertEqual(editor.sources.currentRow(),29)
+   self.assertEqual(editor.source_image.getpixel((0,0))[:3],(0,0,255))
+   self.assertTrue(editor.sources.viewport().rect().intersects(editor.sources.visualItemRect(editor.sources.currentItem())))
+   editor.add_cell([0.,0.,.4,.4]);editor.paste();first=copy.deepcopy(editor.cell())
+   entry['composition']=copy.deepcopy(editor.composition);editor.close()
+   editor=CutEditor(entry,entries,icons,clip)
+   editor.sources.setCurrentRow(0);editor.source_canvas.selection=[0.,0.,.5,.5]
+   editor.add_cell([.5,.5,1.,1.]);editor.paste()
+   self.assertEqual(len(editor.composition['cells']),2);self.assertEqual(editor.composition['cells'][0],first)
+   self.assertNotEqual(editor.composition['cells'][1]['asset'],first['asset']);editor.close()
  def test_cover_crop_roundoff_never_makes_negative_pillow_box(self):
   from imaging import cover_crop,cover_box,crop_box
   import random

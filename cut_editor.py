@@ -335,9 +335,10 @@ class CutEditor(QDialog):
         self.line_width.lineEdit().returnPressed.connect(self.canvas.setFocus)
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.setInterval(16);self.timer.timeout.connect(self.refresh)
         self.sources.currentRowChanged.connect(self.load_source);self.source_canvas.selectionChanged.connect(self.source_selected)
-        if clipboard:
-            self.source_image=decode_asset(clipboard[1]);self.source_uncensored=decode_asset(clipboard[2] if len(clipboard)>2 else clipboard[1]);self.source_canvas.set_image(self.preview_source(),True);self.source_title.setText('복사해 둔 그림 · 드래그해서 필요한 부분 선택')
-        elif entries:self.sources.setCurrentRow(next((i for i,e in enumerate(entries) if e['id']==entry['id']),0))
+        if entries:
+            row=next((i for i,e in enumerate(entries) if e['id']==entry['id']),0)
+            self.sources.setCurrentRow(row)
+            QTimer.singleShot(0,lambda:self.sources.scrollToItem(self.sources.currentItem(),QListWidget.ScrollHint.PositionAtCenter))
         self.set_mode('frame' if entry.get('composition') else 'draw');self.refresh()
     def toggle_source(self,widget):
         widget.setVisible(not widget.isVisible());self.source_toggle.setText('원본 접기' if widget.isVisible() else '원본 펼치기')
