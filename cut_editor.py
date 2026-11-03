@@ -1,7 +1,7 @@
 import copy
 from pathlib import Path
 from PySide6.QtCore import Qt,QRectF,QPointF,QSize,Signal,QTimer
-from PySide6.QtGui import QPainter,QColor,QPen,QImage,QPixmap,QKeySequence,QShortcut,QPainterPath
+from PySide6.QtGui import QPainter,QColor,QPen,QImage,QPixmap,QKeySequence,QShortcut,QPainterPath,QPolygonF
 from PySide6.QtWidgets import (QDialog,QWidget,QVBoxLayout,QHBoxLayout,QPushButton,QLabel,
     QListWidget,QListWidgetItem,QSplitter,QDialogButtonBox,QMessageBox,QSpinBox,QLineEdit,
     QAbstractItemView,QMenu,QCheckBox)
@@ -90,7 +90,7 @@ class ImageCanvas(QWidget):
 class SourceCanvas(ImageCanvas):
     selectionChanged=Signal(object)
     def __init__(self):
-        super().__init__();self.selection=None;self.action=None
+        super().__init__();self.selection=None;self.action=None;self.redraw_on_drag=False
     def clear_selection(self):
         self.selection=None;self.selectionChanged.emit(None);self.update()
     def paintEvent(self,event):
@@ -113,7 +113,7 @@ class SourceCanvas(ImageCanvas):
         if not self.handle and not self.target.contains(event.position()):return
         self.start=event.position();self.end=self.start;self.original_rect=self.selection[:] if self.selection else None
         if self.handle:self.action='resize'
-        elif self.selection and self.image_rect(self.selection).contains(event.position()) and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:self.action='move'
+        elif not self.redraw_on_drag and self.selection and self.image_rect(self.selection).contains(event.position()) and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:self.action='move'
         else:self.action='draw'
         self.update()
     def mouseMoveEvent(self,event):
@@ -137,7 +137,7 @@ class SourceCanvas(ImageCanvas):
 class PanelCanvas(ImageCanvas):
     picked=Signal(object);dragged=Signal(object);zoomed=Signal(object);copied=Signal(object);finished=Signal()
     created=Signal(object);geometryChanged=Signal(object)
-    nudged=Signal(object);lineDrawn=Signal(object)
+    nudged=Signal(object);lineDrawn=Signal(object);polygonChanged=Signal(object)
     def __init__(self):
         super().__init__();self.cells=[];self.active=0;self.mode='frame';self.action=None;self.show_guides=True
         self.ink_points=[];self.ink_width=.005;self.ink_constrained=False
@@ -160,27 +160,64 @@ class PanelCanvas(ImageCanvas):
         painter.setBrush(Qt.BrushStyle.NoBrush)
         for index,cell in enumerate(self.cells):
             rect=self.image_rect(cell['rect']);painter.setPen(QPen(QColor('#ffb347' if index==self.active else '#65baff'),2 if index==self.active else 1))
-            painter.drawRect(rect.adjusted(-3,-3,3,3));painter.drawText(rect.adjusted(7,6,-4,-4),Qt.AlignmentFlag.AlignTop|Qt.AlignmentFlag.AlignLeft,str(index+1))
+            if cell.get('polygon'):painter.drawPolygon(QPolygonF(self.polygon_points(cell)))
+            else:painter.drawRect(rect.adjusted(-3,-3,3,3))
+            painter.drawText(rect.adjusted(7,6,-4,-4),Qt.AlignmentFlag.AlignTop|Qt.AlignmentFlag.AlignLeft,str(index+1))
         if self.mode in ('draw','copy') and self.start is not None and self.end is not None:
             painter.setPen(QPen(QColor('white'),2,Qt.PenStyle.DashLine));painter.drawRect(self.image_rect(self.rectangle(self.start,self.end)))
+        elif self.mode=='shape' and 0<=self.active<len(self.cells):
+            painter.setBrush(QColor('#ffb347'))
+            for point in self.polygon_points(self.cells[self.active]):painter.drawEllipse(point,4,4)
         elif 0<=self.active<len(self.cells):self.draw_handles(painter,self.cells[self.active]['rect'])
+    def polygon_points(self,cell):
+        rect=self.image_rect(cell['rect'])
+        return [QPointF(rect.x()+x*rect.width(),rect.y()+y*rect.height()) for x,y in cell.get('polygon',[[0.,0.],[1.,0.],[1.,1.],[0.,1.]])]
+    def polygon_local(self,cell,pos):
+        rect=self.image_rect(cell['rect'])
+        return [max(0.,min(1.,(pos.x()-rect.x())/rect.width())),max(0.,min(1.,(pos.y()-rect.y())/rect.height()))]
+    def mouseDoubleClickEvent(self,event):
+        if self.mode!='shape' or not 0<=self.active<len(self.cells):return super().mouseDoubleClickEvent(event)
+        cell=self.cells[self.active];points=self.polygon_points(cell);pos=event.position()
+        def distance(index):
+            a=points[index];b=points[(index+1)%len(points)];dx=b.x()-a.x();dy=b.y()-a.y()
+            t=max(0.,min(1.,((pos.x()-a.x())*dx+(pos.y()-a.y())*dy)/max(1e-9,dx*dx+dy*dy)))
+            return (pos.x()-a.x()-t*dx)**2+(pos.y()-a.y()-t*dy)**2
+        if len(points)>=128:return
+        index=min(range(len(points)),key=distance)
+        if distance(index)>144:return
+        polygon=copy.deepcopy(cell.get('polygon',[[0.,0.],[1.,0.],[1.,1.],[0.,1.]]));polygon.insert(index+1,self.polygon_local(cell,pos))
+        self.picked.emit((self.active,self.point(pos),'shape'));self.polygonChanged.emit(polygon);self.start=None;self.action=None;self.finished.emit();event.accept()
     def mousePressEvent(self,event):
         self.setFocus(Qt.FocusReason.MouseFocusReason)
         if self.begin_pan(event):return
         if not self.show_guides:return
+        if event.button()==Qt.MouseButton.RightButton and self.mode=='shape' and 0<=self.active<len(self.cells):
+            cell=self.cells[self.active];points=self.polygon_points(cell)
+            vertex=next((i for i,p in enumerate(points) if (p-event.position()).manhattanLength()<=12),None)
+            if vertex is not None and len(points)>3:
+                polygon=copy.deepcopy(cell.get('polygon',[[0.,0.],[1.,0.],[1.,1.],[0.,1.]]));polygon.pop(vertex)
+                self.picked.emit((self.active,self.point(event.position()),'shape'));self.polygonChanged.emit(polygon);self.finished.emit()
+            event.accept();return
         if event.button()!=Qt.MouseButton.LeftButton or not self.pixmap:return
         self.update_target();pos=event.position();self.handle=None
-        if self.mode not in ('draw','copy','vertical','horizontal','ink','line') and 0<=self.active<len(self.cells):self.handle=self.handle_at(self.cells[self.active]['rect'],pos)
+        if self.mode=='shape' and 0<=self.active<len(self.cells):
+            cell=self.cells[self.active];points=self.polygon_points(cell)
+            vertex=next((i for i,p in enumerate(points) if (p-pos).manhattanLength()<=12),None)
+            if vertex is not None:
+                self.start=pos;self.end=pos;self.action='vertex';self.vertex=vertex
+                self.picked.emit((self.active,self.point(pos),'shape'));return
+
+        if self.mode not in ('draw','copy','vertical','horizontal','ink','line','shape') and 0<=self.active<len(self.cells):self.handle=self.handle_at(self.cells[self.active]['rect'],pos)
         if not self.handle and not self.target.contains(pos):return
         self.start=pos;self.end=pos
         if self.mode in ('ink','line'):
             self.action=self.mode;self.ink_constrained=bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier);self.ink_points=[self.point(pos)];self.update();return
         if self.mode in ('draw','copy'):self.action=self.mode;self.update();return
         point=self.point(pos)
-        index=self.active if self.handle else next((i for i in reversed(range(len(self.cells))) if self.image_rect(self.cells[i]['rect']).contains(pos)),-1)
+        index=self.active if self.handle else next((i for i in reversed(range(len(self.cells))) if (QPolygonF(self.polygon_points(self.cells[i])).containsPoint(pos,Qt.FillRule.OddEvenFill) if self.cells[i].get('polygon') else self.image_rect(self.cells[i]['rect']).contains(pos))),-1)
         if index<0:self.start=None;return
         self.active=index;self.original_rect=self.cells[index]['rect'][:]
-        self.action='resize' if self.handle else ('frame' if self.mode=='frame' else 'image')
+        self.action='resize' if self.handle else ('frame' if self.mode in ('frame','shape') else 'image')
         self.picked.emit((index,point,self.mode));self.update()
     def update_ink(self,pos,modifiers):
         self.ink_constrained=bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
@@ -207,6 +244,8 @@ class PanelCanvas(ImageCanvas):
         pos=event.position()
         if self.action in ('ink','line'):
             self.update_ink(pos,event.modifiers())
+        elif self.action=='vertex':
+            cell=self.cells[self.active];polygon=copy.deepcopy(cell.get('polygon',[[0.,0.],[1.,0.],[1.,1.],[0.,1.]]));polygon[self.vertex]=self.polygon_local(cell,pos);self.polygonChanged.emit(polygon)
         elif self.action=='resize':self.geometryChanged.emit((self.active,self.resized_rect(self.original_rect,self.point(pos),self.handle)))
         elif self.action=='frame':
             a,b=self.point(self.start),self.point(pos)
@@ -274,7 +313,7 @@ class CutEditor(QDialog):
         right=QWidget();rl=QVBoxLayout(right);rl.setContentsMargins(3,0,0,0)
         title=QLabel(f'대상: {Path(entry["path"]).name}  ·  출력 {self.base.width} × {self.base.height}px');title.setWordWrap(True);rl.addWidget(title)
         toolbar=QHBoxLayout();rl.addLayout(toolbar);self.mode_buttons={}
-        for mode,label in [('draw','＋ 컷 그리기'),('frame','컷 이동'),('move','그림 위치')]:
+        for mode,label in [('draw','＋ 컷 그리기'),('frame','컷 이동'),('shape','자유형 조절'),('move','그림 위치')]:
             button=QPushButton(label);button.setCheckable(True);button.clicked.connect(lambda checked,m=mode:self.set_mode(m));toolbar.addWidget(button);self.mode_buttons[mode]=button
         more_button=QPushButton('더 보기');menu=QMenu(more_button)
         for label,fn in [('세로 분할선',lambda:self.set_mode('vertical')),('가로 분할선',lambda:self.set_mode('horizontal')),
@@ -284,7 +323,7 @@ class CutEditor(QDialog):
         self.canvas=PanelCanvas();self.canvas.ink_image_size=self.base.size;rl.addWidget(self.canvas,1)
         self.canvas.picked.connect(self.pick);self.canvas.dragged.connect(self.move_layer);self.canvas.zoomed.connect(self.scale_layer)
         self.canvas.finished.connect(self.finish_gesture);self.canvas.copied.connect(self.copy_region)
-        self.canvas.created.connect(self.add_cell);self.canvas.geometryChanged.connect(self.change_geometry)
+        self.canvas.created.connect(self.add_cell);self.canvas.geometryChanged.connect(self.change_geometry);self.canvas.polygonChanged.connect(self.change_polygon)
         self.canvas.nudged.connect(self.nudge);self.canvas.lineDrawn.connect(self.add_line)
         line_tools=QHBoxLayout();rl.addLayout(line_tools)
         for mode,label in [('ink','자유선'),('line','직선')]:
@@ -407,6 +446,7 @@ class CutEditor(QDialog):
         messages={'ink':'마우스로 자유선 · Shift+드래그: 수평/수직/45도 직선 · 휠: 화면 확대 · Ctrl+드래그: 이동',
                   'line':'드래그: 직선 · Shift: 수평/수직/45도 고정 · 휠: 화면 확대',
                   'draw':'대상 그림에서 드래그하여 원하는 크기의 새 컷을 만드세요.',
+                  'shape':'꼭짓점 드래그: 모양 조절 · 변 더블클릭: 점 추가 · 점 우클릭: 삭제 · 컷 이동으로 크기 조절',
                   'frame':'드래그/방향키: 컷 이동 · Shift+방향키: 10px · 모서리: 크기 조절',
                   'move':'드래그/방향키: 그림 위치 · Shift+방향키: 10px · 휠: 그림 확대/축소',
                   'vertical':'나눌 컷의 원하는 위치를 클릭하면 세로로 나뉩니다.',
@@ -436,7 +476,7 @@ class CutEditor(QDialog):
             self.record();first=copy.deepcopy(cell);second=copy.deepcopy(cell)
             first['rect'][axis+2]=value;second['rect'][axis]=value
             self.composition['cells'][index:index+1]=[first,second];self.set_mode('frame');self.refresh()
-        elif mode in ('move','frame'):
+        elif mode in ('move','frame','shape'):
             self.gesture=copy.deepcopy(self.composition);self.update_image()
     def add_line(self,line):
         self.record();self.composition.setdefault('lines',[]).append(copy.deepcopy(line));self.refresh()
@@ -449,6 +489,8 @@ class CutEditor(QDialog):
         if self.composition['cells']==[{'rect':[0.,0.,1.,1.]}]:self.composition['cells']=[]
         self.composition['freeform']=True;self.composition['cells'].append({'rect':rect[:]})
         self.canvas.active=len(self.composition['cells'])-1;self.set_mode('frame');self.refresh()
+    def change_polygon(self,polygon):
+        if self.cell() is not None:self.cell()['polygon']=polygon;self.update_image()
     def change_geometry(self,event):
         index,rect=event
         if 0<=index<len(self.composition['cells']):

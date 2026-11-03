@@ -57,6 +57,9 @@ def validate_composition(value,check_images=False):
         if not isinstance(cell,dict):raise ValueError('잘못된 컷 데이터')
         rect=cell.get('rect')
         if not numbers(rect,4) or not (0<=rect[0]<rect[2]<=1 and 0<=rect[1]<rect[3]<=1):raise ValueError('잘못된 컷 범위')
+        polygon=cell.get('polygon')
+        if polygon is not None and (not isinstance(polygon,list) or not 3<=len(polygon)<=128 or any(not numbers(point,2) or any(v<0 or v>1 for v in point) for point in polygon)):
+            raise ValueError('잘못된 자유형 컷 좌표')
         sides=cell.get('border_sides',['top','bottom','left','right'])
         if not isinstance(sides,list) or any(side not in ('top','bottom','left','right') for side in sides) or len(set(sides))!=len(sides):raise ValueError('잘못된 컷 테두리 방향')
         border=cell.get('border',0.)
@@ -94,7 +97,13 @@ def render_composition(image,composition,cache=None,include_mosaic=True):
                 box=tuple(round(v*(width if i%2==0 else height)) for i,v in enumerate(cell['rect']))
                 gap=round(composition['gutter']*width)
                 if gap:ImageDraw.Draw(result).rectangle((box[0],box[1],max(box[0],box[2]-1),max(box[1],box[3]-1)),outline='white',width=gap)
-            panel_border(result,box,round(cell.get('border',0.)*width),gap if composition.get('freeform') else (gap+1)//2,cell.get('border_sides'))
+            if cell.get('polygon'):
+                left,top,right,bottom=box
+                points=[(round(left+x*(right-left-1)),round(top+y*(bottom-top-1))) for x,y in cell['polygon']]
+                border=round(cell.get('border',0.)*width)
+                if border and cell.get('border_sides',['top','bottom','left','right']):ImageDraw.Draw(result).line(points+[points[0]],fill='black',width=border,joint='curve')
+            else:
+                panel_border(result,box,round(cell.get('border',0.)*width),gap if composition.get('freeform') else (gap+1)//2,cell.get('border_sides'))
             continue
         variant=not include_mosaic and key in composition.get('uncensored_assets',{})
         cache_key=(key,'uncensored') if variant else key
@@ -116,7 +125,18 @@ def render_composition(image,composition,cache=None,include_mosaic=True):
             if gap:ImageDraw.Draw(background).rectangle((0,0,cw-1,ch-1),outline='white',width=gap)
         gap=round(composition.get('gutter',0.)*width)
         panel_border(background,(0,0,cw,ch),round(cell.get('border',0.)*width),gap if composition.get('freeform') else (gap+1)//2,cell.get('border_sides'))
-        result.paste(background,box)
+        if cell.get('polygon'):
+            points=[(round(x*(cw-1)),round(y*(ch-1))) for x,y in cell['polygon']]
+            mask=Image.new('L',(cw,ch),0);ImageDraw.Draw(mask).polygon(points,fill=255)
+            # Polygon borders follow the actual outline, rather than its bounding box.
+            background=Image.new('RGBA',(cw,ch),'white');background.alpha_composite(patch)
+            gap=round(composition.get('gutter',0.)*width)
+            if gap:ImageDraw.Draw(background).line(points+[points[0]],fill='white',width=gap*2,joint='curve')
+            border=round(cell.get('border',0.)*width)
+            if border and cell.get('border_sides',['top','bottom','left','right']):
+                ImageDraw.Draw(background).line(points+[points[0]],fill='black',width=border*2,joint='curve')
+            result.paste(background,box,mask)
+        else:result.paste(background,box)
     gap=round(composition.get('gutter',0.)*width)
     if gap and not composition.get('freeform'):
         draw=ImageDraw.Draw(result)

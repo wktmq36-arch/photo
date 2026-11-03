@@ -19,7 +19,7 @@ class BannerEditor(QDialog):
     def __init__(self,entry,parent=None,total_count=0):
         super().__init__(parent);self.setWindowTitle('배너 영역과 문구');self.resize(1000,800);self.total_count=total_count
         self.image=render_entry(read_pixels(entry['path']),entry)
-        layout=QVBoxLayout(self);layout.addWidget(QLabel('드래그로 영역 선택 · 모서리로 조절 · 휠: 확대 · Ctrl+드래그: 이동'))
+        layout=QVBoxLayout(self);layout.addWidget(QLabel('드래그로 새 영역 선택 · 모서리로 조절 · 휠: 확대 · Ctrl+드래그: 이동'))
         options=dict(DEFAULT_TEXT,**entry.get('banner_text',{}))
         row=QHBoxLayout();layout.addLayout(row)
         self.text_enabled=QCheckBox('문구 넣기');self.text_enabled.setChecked(options['enabled']);row.addWidget(self.text_enabled)
@@ -35,8 +35,8 @@ class BannerEditor(QDialog):
         row.addWidget(QLabel('윗줄'));self.ja=QLineEdit(options['ja']);self.ja.setMaxLength(200);row.addWidget(self.ja)
         row.addWidget(QLabel('아랫줄'));self.en=QLineEdit(options['en']);self.en.setMaxLength(200);row.addWidget(self.en)
         self.tabs=QTabWidget();layout.addWidget(self.tabs,1)
-        self.canvas=SourceCanvas();preview=self.image.copy();preview.thumbnail((1800,1800));self.canvas.set_image(preview)
-        self.canvas.selection=entry.get('banner_rect',[0.,0.,1.,1.])[:];self.tabs.addTab(self.canvas,'영역 선택')
+        self.canvas=SourceCanvas();self.canvas.redraw_on_drag=True;preview=self.image.copy();preview.thumbnail((1800,1800));self.canvas.set_image(preview)
+        self.canvas.selection=entry['banner_rect'][:] if entry.get('banner_rect') else None;self.tabs.addTab(self.canvas,'영역 선택')
         self.preview=BannerPreview();self.tabs.addTab(self.preview,'출력 미리보기')
         self.info=QLabel();layout.addWidget(self.info)
         self.preview_timer=QTimer(self);self.preview_timer.setSingleShot(True);self.preview_timer.setInterval(100);self.preview_timer.timeout.connect(self.refresh_preview)

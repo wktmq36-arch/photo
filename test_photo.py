@@ -6,6 +6,49 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_polygon_cut_clipping_validation_and_vertex_undo(self):
+  from composition import paired_asset,render_composition,validate_composition
+  from cut_editor import CutEditor
+  from PySide6.QtGui import QIcon
+  from PySide6.QtCore import Qt,QPointF
+  from PySide6.QtTest import QTest
+  import copy,json
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'base.png';Image.new('RGB',(200,200),'blue').save(path)
+   entry={'id':'target','path':str(path),'regions':[]};editor=CutEditor(entry,[entry],[QIcon()]);editor.show();app.processEvents()
+   editor.add_cell([.1,.1,.9,.9]);editor.clipboard=paired_asset(Image.new('RGBA',(50,50),'red'),Image.new('RGBA',(50,50),'green'));editor.source_dirty=False;editor.paste()
+   editor.set_mode('shape');editor.refresh();app.processEvents()
+   points=editor.canvas.polygon_points(editor.cell());start=points[0];end=QPointF((points[0].x()+points[1].x())/2,start.y()+20)
+   QTest.mousePress(editor.canvas,Qt.MouseButton.LeftButton,pos=start.toPoint());QTest.mouseMove(editor.canvas,end.toPoint());QTest.mouseRelease(editor.canvas,Qt.MouseButton.LeftButton,pos=end.toPoint());editor.refresh()
+   self.assertIn('polygon',editor.cell());self.assertGreater(editor.cell()['polygon'][0][0],.4)
+   polygon=copy.deepcopy(editor.cell()['polygon']);editor.undo();self.assertNotIn('polygon',editor.cell());editor.redo();self.assertEqual(editor.cell()['polygon'],polygon)
+   points=editor.canvas.polygon_points(editor.cell());mid=(points[1]+points[2])/2
+   QTest.mouseDClick(editor.canvas,Qt.MouseButton.LeftButton,pos=mid.toPoint());editor.refresh()
+   self.assertEqual(len(editor.cell()['polygon']),5)
+   added=editor.canvas.polygon_points(editor.cell())[2]
+   QTest.mouseClick(editor.canvas,Qt.MouseButton.RightButton,pos=added.toPoint());editor.refresh();self.assertEqual(len(editor.cell()['polygon']),4)
+   editor.cell()['polygon']=[[.5,0.],[1.,1.],[0.,1.]];data=json.loads(json.dumps(editor.composition));validate_composition(data,True)
+   image=render_composition(Image.new('RGBA',(200,200),'blue'),data)
+   self.assertEqual(image.getpixel((22,22))[:3],(0,0,255));self.assertEqual(image.getpixel((100,120))[:3],(255,0,0))
+   uncen=render_composition(Image.new('RGBA',(200,200),'blue'),data,include_mosaic=False);self.assertEqual(uncen.getpixel((100,120))[:3],(0,128,0))
+   data['cells'][0]['polygon']=[[0.,0.],[1.,1.]]
+   with self.assertRaises(ValueError):validate_composition(data)
+   editor.close()
+ def test_banner_drag_replaces_existing_area_without_shift(self):
+  from banner_editor import BannerEditor
+  from PySide6.QtCore import Qt
+  from PySide6.QtTest import QTest
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'image.png';Image.new('RGB',(400,300),'red').save(path)
+   entry={'path':str(path),'regions':[]};editor=BannerEditor(entry);editor.show();app.processEvents()
+   self.assertIsNone(editor.canvas.selection)
+   editor.canvas.selection=[0.,0.,1.,1.];canvas=editor.canvas;canvas.update_target();r=canvas.target
+   start=r.topLeft()+r.bottomRight();start/=2
+   end=start+__import__('PySide6.QtCore',fromlist=['QPointF']).QPointF(60,45)
+   QTest.mousePress(canvas,Qt.MouseButton.LeftButton,pos=start.toPoint());QTest.mouseMove(canvas,end.toPoint());QTest.mouseRelease(canvas,Qt.MouseButton.LeftButton,pos=end.toPoint())
+   self.assertAlmostEqual(canvas.selection[0],.5,delta=.01);self.assertLess(canvas.selection[2],.9);editor.close()
  def test_main_export_strength_override_keeps_cen_and_work_unchanged(self):
   import copy
   from imaging import export_pair,render_entry
