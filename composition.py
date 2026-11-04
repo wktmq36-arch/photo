@@ -85,6 +85,20 @@ def panel_border(image,box,border,inset=0,sides=None):
     for side in sides:draw.rectangle(areas[side],fill='black')
 
 
+def polygon_border(image,points,border,sides=None,shape=None):
+    if not border:return
+    sides=set(['top','bottom','left','right'] if sides is None else sides)
+    shape=points if shape is None else shape
+    area=sum(a[0]*b[1]-b[0]*a[1] for a,b in zip(shape,shape[1:]+shape[:1]))
+    winding=1 if area>=0 else -1
+    draw=ImageDraw.Draw(image)
+    for index,(a,b) in enumerate(zip(shape,shape[1:]+shape[:1])):
+        dx,dy=(b[0]-a[0])*winding,(b[1]-a[1])*winding
+        if dx==dy==0:continue
+        side=('top' if dx>0 else 'bottom') if abs(dx)>=abs(dy) else ('right' if dy>0 else 'left')
+        if side in sides:draw.line([points[index],points[(index+1)%len(points)]],fill='black',width=border)
+
+
 def render_composition(image,composition,cache=None,include_mosaic=True):
     if not composition:return image
     result=image.convert('RGBA').copy();width,height=result.size
@@ -102,7 +116,7 @@ def render_composition(image,composition,cache=None,include_mosaic=True):
                 left,top,right,bottom=box
                 points=[(round(left+x*(right-left-1)),round(top+y*(bottom-top-1))) for x,y in cell['polygon']]
                 border=round(cell.get('border',0.)*width)
-                if border and cell.get('border_sides',['top','bottom','left','right']):ImageDraw.Draw(result).line(points+[points[0]],fill='black',width=border,joint='curve')
+                polygon_border(result,points,border,cell.get('border_sides'),cell['polygon'])
             else:
                 panel_border(result,box,round(cell.get('border',0.)*width),gap if composition.get('freeform') else (gap+1)//2,cell.get('border_sides'))
             continue
@@ -134,8 +148,7 @@ def render_composition(image,composition,cache=None,include_mosaic=True):
             gap=round(composition.get('gutter',0.)*width)
             if gap:ImageDraw.Draw(background).line(points+[points[0]],fill='white',width=gap*2,joint='curve')
             border=round(cell.get('border',0.)*width)
-            if border and cell.get('border_sides',['top','bottom','left','right']):
-                ImageDraw.Draw(background).line(points+[points[0]],fill='black',width=border*2,joint='curve')
+            polygon_border(background,points,border*2,cell.get('border_sides'),cell['polygon'])
             result.paste(background,box,mask)
         else:result.paste(background,box)
     gap=round(composition.get('gutter',0.)*width)

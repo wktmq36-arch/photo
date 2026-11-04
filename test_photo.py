@@ -6,6 +6,21 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_polygon_border_respects_every_side_combination_with_and_without_paste(self):
+  from composition import render_composition,pixel_asset
+  import itertools
+  base=Image.new('RGBA',(200,200),'white');key,data=pixel_asset(base)
+  polygon=[[.2,0.],[.8,0.],[1.,1.],[0.,1.]]
+  probes={'top':(100,20),'right':(163,100),'bottom':(100,179),'left':(36,100)}
+  for pasted in (False,True):
+   for reverse in (False,True):
+    for flags in itertools.product((False,True),repeat=4):
+     sides=[s for s,flag in zip(probes,flags) if flag]
+     cell={'rect':[.1,.1,.9,.9],'polygon':polygon[::-1] if reverse else polygon,'border':.03,'border_sides':sides}
+     if pasted:cell['asset']=key
+     comp={'assets':{key:data},'cells':[cell],'freeform':True}
+     image=render_composition(base,comp)
+     for side,point in probes.items():self.assertEqual(image.getpixel(point)[:3],(0,0,0) if side in sides else (255,255,255),(pasted,reverse,sides,side))
  def test_pasted_cut_stays_above_existing_clone_strokes_but_below_new_ones(self):
   import copy,json
   from cut_editor import CutEditor
