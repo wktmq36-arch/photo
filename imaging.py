@@ -216,10 +216,30 @@ class ClonePreview:
         self.result.paste(patch,box);self.count=len(points)
         return self.result
 
+def cut_clone_depth(entry):
+    cells=(entry.get('composition') or {}).get('cells',[])
+    return min(len(entry.get('clones',[])),max((c.get('clone_depth',0) for c in cells),default=0))
+
+
+def compose_with_retouch(image,entry,cache=None,include_mosaic=True):
+    composition=entry.get('composition')
+    depth=cut_clone_depth(entry)
+    if not depth:return render_composition(image,composition,cache,include_mosaic)
+    strokes=entry.get('clones',[]);result=image;applied=0
+    # Each pasted cut is above the clone strokes that already existed when pasted.
+    cells=sorted(composition['cells'],key=lambda c:c.get('clone_depth',0))
+    from itertools import groupby
+    for target,group in groupby(cells,key=lambda c:min(len(strokes),c.get('clone_depth',0))):
+        result=render_clones(result,strokes[applied:target]);applied=target
+        result=render_composition(result,dict(composition,cells=list(group),lines=[]),cache,include_mosaic)
+    if composition.get('lines'):result=render_composition(result,dict(composition,cells=[]),cache,include_mosaic)
+    return result
+
+
 def render_entry(image,entry,include_mosaic=True):
     # Retouch first; censor last, so a clone can never undo a mosaic.
-    composed=render_composition(crop_base(image,entry,include_mosaic),entry.get('composition'),include_mosaic=include_mosaic)
-    cloned=render_clones(composed,entry.get('clones',[]))
+    composed=compose_with_retouch(crop_base(image,entry,include_mosaic),entry,include_mosaic=include_mosaic)
+    cloned=render_clones(composed,entry.get('clones',[])[cut_clone_depth(entry):])
     censored=render_regions(cloned,entry['regions']) if include_mosaic and entry['regions'] else cloned
     return render_erasers(censored,entry.get('erasers',[]))
 

@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, 
 from exporting import prepare_output
 from recovery import RecoveryStore,validate_document
 from mega_share import MegaClient,find_client,create_package,upload_package
-from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, render_clones, render_erasers, ClonePreview, export_image, export_banner, export_pair, crop_base, edit_layers, all_regions, validate_edits
+from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, render_clones, render_erasers, ClonePreview, export_image, export_banner, export_pair, crop_base, edit_layers, all_regions, validate_edits, compose_with_retouch, cut_clone_depth
 from composition import paired_asset,pixel_asset,render_composition,validate_composition
 
 def filename_sort_key(value):
@@ -429,7 +429,7 @@ class Canvas(QWidget):
 class Window(QMainWindow):
     shareStage=Signal(str)
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.79'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.80'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -1078,7 +1078,7 @@ class Window(QMainWindow):
         if not composition and not entry.get('crop_source'):return image
         key=(id(entry),id(image),id(composition),id(entry.get('crop_source')))
         if key!=self.composition_cache_key:
-            self.composition_cache_image=render_composition(crop_base(image,entry),composition);self.composition_cache_key=key
+            self.composition_cache_image=compose_with_retouch(crop_base(image,entry),entry);self.composition_cache_key=key
         return self.composition_cache_image
     def copy_for_cut(self):
         entry=self.current()
@@ -1178,7 +1178,7 @@ class Window(QMainWindow):
     def committed_clones(self,entry,image):
         key=self.clone_key(entry,image)
         if key!=self.clone_cache_key:
-            self.clone_cache_image=render_clones(image,entry.get('clones',[]));self.clone_cache_key=key
+            self.clone_cache_image=render_clones(image,entry.get('clones',[])[cut_clone_depth(entry):]);self.clone_cache_key=key
         return self.clone_cache_image
     def flush_clone_preview(self,finish=False):
         entry=self.current()

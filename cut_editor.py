@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (QDialog,QWidget,QVBoxLayout,QHBoxLayout,QPushButt
     QListWidget,QListWidgetItem,QSplitter,QDialogButtonBox,QMessageBox,QSpinBox,QLineEdit,
     QAbstractItemView,QMenu,QCheckBox)
 from composition import empty_composition,paired_asset,pixel_asset,decode_asset,render_composition
-from imaging import read_pixels,render_entry,render_clones,render_regions,render_erasers,crop_base
+from imaging import read_pixels,render_entry,render_clones,render_regions,render_erasers,crop_base,compose_with_retouch,cut_clone_depth
 
 
 def pixmap_for(image):
@@ -317,7 +317,7 @@ class CutEditor(QDialog):
             button=QPushButton(label);button.setCheckable(True);button.clicked.connect(lambda checked,m=mode:self.set_mode(m));toolbar.addWidget(button);self.mode_buttons[mode]=button
         more_button=QPushButton('더 보기');menu=QMenu(more_button)
         for label,fn in [('세로 분할선',lambda:self.set_mode('vertical')),('가로 분할선',lambda:self.set_mode('horizontal')),
-                         ('붙인 그림 비우기',self.remove_layer),('선택 컷 삭제',self.delete_cell),('선택 컷 앞으로',self.raise_cell),('컷 배치 초기화',self.reset),('화면 맞춤',lambda:self.canvas.reset_view())]:
+                         ('붙인 그림 비우기',self.remove_layer),('선택 컷 삭제',self.delete_cell),('선택 컷 앞으로 · 기존 도장 위로',self.raise_cell),('컷 배치 초기화',self.reset),('화면 맞춤',lambda:self.canvas.reset_view())]:
             menu.addAction(label,fn)
         more_button.setMenu(menu);toolbar.addWidget(more_button)
         self.canvas=PanelCanvas();self.canvas.ink_image_size=self.base.size;rl.addWidget(self.canvas,1)
@@ -457,8 +457,8 @@ class CutEditor(QDialog):
     def update_image(self):
         if not self.timer.isActive():self.timer.start()
     def refresh(self):
-        self.timer.stop();image=render_composition(self.preview,self.composition,self.assets_cache)
-        image=render_clones(image,self.entry.get('clones',[]));image=render_regions(image,self.entry['regions']);image=render_erasers(image,self.entry.get('erasers',[]))
+        self.timer.stop();image=compose_with_retouch(self.preview,dict(self.entry,composition=self.composition),self.assets_cache)
+        image=render_clones(image,self.entry.get('clones',[])[cut_clone_depth(dict(self.entry,composition=self.composition)):]);image=render_regions(image,self.entry['regions']);image=render_erasers(image,self.entry.get('erasers',[]))
         self.canvas.set_image(image);self.canvas.cells=self.composition['cells']
         self.canvas.active=min(self.canvas.active,len(self.canvas.cells)-1)
         self.gutter.blockSignals(True);self.gutter.setValue(round(self.composition.get('gutter',0.)*self.base.width));self.gutter.blockSignals(False)
@@ -540,7 +540,7 @@ class CutEditor(QDialog):
         self.record()
         if self.cell() is None:
             self.composition['cells'].append({'rect':[.1,.1,.9,.9]});self.canvas.active=len(self.composition['cells'])-1;self.composition['freeform']=True
-        key=self.store_clipboard();self.cell().update(asset=key,scale=1.,offset=[0.,0.])
+        key=self.store_clipboard();self.cell().update(asset=key,scale=1.,offset=[0.,0.],clone_depth=len(self.entry.get('clones',[])))
         self.set_mode('move');self.refresh();self.canvas.setFocus()
     def fill_original_resolution(self):
         self.copy_selection()
@@ -548,7 +548,7 @@ class CutEditor(QDialog):
         self.record();key=self.store_clipboard()
         # Keep earlier cuts editable underneath; this full-canvas cut is on top.
         if self.composition['cells']==[{'rect':[0.,0.,1.,1.]}]:self.composition['cells']=[]
-        self.composition['cells'].append({'rect':[0.,0.,1.,1.],'asset':key,'scale':1.,'offset':[0.,0.],'stretch':True})
+        self.composition['cells'].append({'rect':[0.,0.,1.,1.],'asset':key,'scale':1.,'offset':[0.,0.],'stretch':True,'clone_depth':len(self.entry.get('clones',[]))})
         self.composition['freeform']=True;self.canvas.active=len(self.composition['cells'])-1;self.set_mode('move');self.refresh()
         self.info.setText(f'선택 부분을 {self.base.width} × {self.base.height}px에 채웠습니다. 휠/드래그로 구도 조절')
     def move_layer(self,delta):
@@ -576,8 +576,10 @@ class CutEditor(QDialog):
         if self.cell() is None:return
         self.record();self.composition['cells'].pop(self.canvas.active);self.refresh()
     def raise_cell(self):
-        if self.cell() is None or self.canvas.active==len(self.composition['cells'])-1:return
-        self.record();cell=self.composition['cells'].pop(self.canvas.active);self.composition['cells'].append(cell)
+        if self.cell() is None:return
+        depth=len(self.entry.get('clones',[]))
+        if self.canvas.active==len(self.composition['cells'])-1 and self.cell().get('clone_depth',0)==depth:return
+        self.record();cell=self.composition['cells'].pop(self.canvas.active);cell['clone_depth']=depth;self.composition['cells'].append(cell)
         self.canvas.active=len(self.composition['cells'])-1;self.refresh()
     def reset(self):
         self.record();self.composition=empty_composition();self.canvas.active=0;self.set_mode('draw');self.refresh()

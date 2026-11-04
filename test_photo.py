@@ -6,6 +6,32 @@ from PySide6.QtWidgets import QApplication
 from imaging import export_image
 from main import Window
 class Tests(unittest.TestCase):
+ def test_pasted_cut_stays_above_existing_clone_strokes_but_below_new_ones(self):
+  import copy,json
+  from cut_editor import CutEditor
+  from composition import paired_asset,render_composition,validate_composition
+  from imaging import render_entry,render_clones,export_image
+  from PySide6.QtGui import QIcon
+  app=QApplication.instance() or QApplication([])
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'base.png';base=Image.new('RGBA',(200,200),'blue');base.save(path)
+   stroke={'source':[.1,.5],'points':[[.7,.5],[.8,.5]],'radius':.16,'softness':0.}
+   entry={'id':'target','path':str(path),'regions':[],'clones':[stroke]}
+   source=Image.new('RGBA',(200,200),'red');source.paste('yellow',(0,0,100,200));uncen=Image.new('RGBA',(200,200),'green')
+   editor=CutEditor(entry,[entry],[QIcon()]);editor.add_cell([.4,.1,1.,.9]);editor.clipboard=paired_asset(source,uncen);editor.source_dirty=False;editor.paste();editor.refresh()
+   self.assertEqual(editor.cell()['clone_depth'],1)
+   entry['composition']=json.loads(json.dumps(editor.composition));validate_composition(entry['composition'],True)
+   expected=render_composition(render_clones(base,[stroke]),entry['composition']);actual=render_entry(base,entry)
+   self.assertEqual(actual.tobytes(),expected.tobytes())
+   self.assertNotEqual(actual.tobytes(),render_clones(render_composition(base,entry['composition']),[stroke]).tobytes())
+   export_image(entry,Path(d)/'main.png','PNG')
+   with Image.open(Path(d)/'main.png') as exported:self.assertEqual(exported.convert('RGBA').tobytes(),expected.tobytes())
+   self.assertEqual(render_entry(base,entry,include_mosaic=False).getpixel((140,100))[:3],(0,128,0))
+   later={'source':[.1,.5],'points':[[.7,.5]],'radius':.12,'softness':0.};entry['clones'].append(later)
+   self.assertEqual(render_entry(base,entry).tobytes(),render_clones(expected,[later]).tobytes())
+   editor.cell().pop('clone_depth');editor.raise_cell();self.assertEqual(editor.cell()['clone_depth'],2)
+   editor.undo();self.assertNotIn('clone_depth',editor.cell());editor.redo();self.assertEqual(editor.cell()['clone_depth'],2)
+   editor.close()
  def test_polygon_cut_clipping_validation_and_vertex_undo(self):
   from composition import paired_asset,render_composition,validate_composition
   from cut_editor import CutEditor

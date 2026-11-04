@@ -57,6 +57,7 @@ def validate_composition(value,check_images=False):
         if not isinstance(cell,dict):raise ValueError('잘못된 컷 데이터')
         rect=cell.get('rect')
         if not numbers(rect,4) or not (0<=rect[0]<rect[2]<=1 and 0<=rect[1]<rect[3]<=1):raise ValueError('잘못된 컷 범위')
+        if not isinstance(cell.get('clone_depth',0),int) or not 0<=cell.get('clone_depth',0)<=1000000:raise ValueError('잘못된 컷 도장 순서')
         polygon=cell.get('polygon')
         if polygon is not None and (not isinstance(polygon,list) or not 3<=len(polygon)<=128 or any(not numbers(point,2) or any(v<0 or v>1 for v in point) for point in polygon)):
             raise ValueError('잘못된 자유형 컷 좌표')
