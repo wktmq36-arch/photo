@@ -85,6 +85,28 @@ def panel_border(image,box,border,inset=0,sides=None):
     for side in sides:draw.rectangle(areas[side],fill='black')
 
 
+def smooth_black_line(image, points, width, round_caps=False):
+    # Rasterize only the stroke's bounds at higher resolution.
+    padding = width + 2
+    left = max(0, math.floor(min(x for x, y in points)) - padding)
+    top = max(0, math.floor(min(y for x, y in points)) - padding)
+    right = min(image.width, math.ceil(max(x for x, y in points)) + padding)
+    bottom = min(image.height, math.ceil(max(y for x, y in points)) + padding)
+    if right <= left or bottom <= top:
+        return
+    scale = 4
+    size = (right - left, bottom - top)
+    mask = Image.new('L', (size[0] * scale, size[1] * scale))
+    coordinates = [(round((x - left) * scale + 1.5), round((y - top) * scale + 1.5)) for x, y in points]
+    draw = ImageDraw.Draw(mask)
+    draw.line(coordinates, fill=255, width=width * scale, joint='curve')
+    if round_caps:
+        radius = (width * scale - 1) / 2
+        for x, y in (coordinates[0], coordinates[-1]):
+            draw.ellipse((x-radius, y-radius, x+radius, y+radius), fill=255)
+    image.paste((0, 0, 0, 255), (left, top, right, bottom), mask.resize(size, Image.Resampling.BOX))
+
+
 def polygon_border(image,points,border,sides=None,shape=None):
     if not border:return
     sides=set(['top','bottom','left','right'] if sides is None else sides)
@@ -96,7 +118,12 @@ def polygon_border(image,points,border,sides=None,shape=None):
         dx,dy=(b[0]-a[0])*winding,(b[1]-a[1])*winding
         if dx==dy==0:continue
         side=('top' if dx>0 else 'bottom') if abs(dx)>=abs(dy) else ('right' if dy>0 else 'left')
-        if side in sides:draw.line([points[index],points[(index+1)%len(points)]],fill='black',width=border)
+        if side in sides:
+            edge = [points[index], points[(index + 1) % len(points)]]
+            if dx and dy:
+                smooth_black_line(image, edge, border)
+            else:
+                draw.line(edge, fill='black', width=border)
 
 
 def render_composition(image,composition,cache=None,include_mosaic=True):
@@ -164,6 +191,10 @@ def render_composition(image,composition,cache=None,include_mosaic=True):
     for line in composition.get('lines',[]):
         points=[(round(x*(width-1)),round(y*(height-1))) for x,y in line['points']]
         thickness=max(1,round(line['width']*width));radius=(thickness-1)/2
+        if len(points)>1 and not (all(x==points[0][0] for x,y in points) or all(y==points[0][1] for x,y in points)):
+            precise_points = [(x*(width-1), y*(height-1)) for x,y in line['points']]
+            smooth_black_line(result, precise_points, thickness, line.get('cap','round')=='round')
+            continue
         if len(points)>1:draw.line(points,fill='black',width=thickness,joint='curve')
         if line.get('cap','round')=='round':
             for x,y in (points[0],points[-1]):draw.ellipse((x-radius,y-radius,x+radius,y+radius),fill='black')
