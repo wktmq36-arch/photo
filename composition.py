@@ -168,8 +168,19 @@ def render_composition(image,composition,cache=None,include_mosaic=True):
         gap=round(composition.get('gutter',0.)*width)
         panel_border(background,(0,0,cw,ch),round(cell.get('border',0.)*width),gap if composition.get('freeform') else (gap+1)//2,cell.get('border_sides'))
         if cell.get('polygon'):
-            points=[(round(x*(cw-1)),round(y*(ch-1))) for x,y in cell['polygon']]
-            mask=Image.new('L',(cw,ch),0);ImageDraw.Draw(mask).polygon(points,fill=255)
+            precise_points = [(x * (cw - 1), y * (ch - 1)) for x, y in cell['polygon']]
+            points = [(round(x), round(y)) for x, y in precise_points]
+            scale = 4
+            mask = Image.new('L', (cw * scale, ch * scale))
+            ImageDraw.Draw(mask).polygon(
+                [(round(x * scale + 1.5), round(y * scale + 1.5)) for x, y in precise_points],
+                fill=255,
+            )
+            mask = mask.resize((cw, ch), Image.Resampling.BOX)
+            # Keep edges that coincide with the cut's rectangular bounds opaque.
+            for a, b in zip(points, points[1:] + points[:1]):
+                if (a[0] == b[0] and a[0] in (0, cw - 1)) or (a[1] == b[1] and a[1] in (0, ch - 1)):
+                    ImageDraw.Draw(mask).line((a, b), fill=255)
             # Polygon borders follow the actual outline, rather than its bounding box.
             background=Image.new('RGBA',(cw,ch),'white');background.alpha_composite(patch)
             gap=round(composition.get('gutter',0.)*width)

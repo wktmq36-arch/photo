@@ -11,7 +11,7 @@ class Tests(unittest.TestCase):
   import itertools
   base=Image.new('RGBA',(200,200),'white');key,data=pixel_asset(base)
   polygon=[[.2,0.],[.8,0.],[1.,1.],[0.,1.]]
-  probes={'top':(100,20),'right':(163,100),'bottom':(100,179),'left':(36,100)}
+  probes={'top':(100,20),'right':(161,100),'bottom':(100,179),'left':(38,100)}
   for pasted in (False,True):
    for reverse in (False,True):
     for flags in itertools.product((False,True),repeat=4):
