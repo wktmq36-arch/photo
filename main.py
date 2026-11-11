@@ -429,7 +429,7 @@ class Canvas(QWidget):
 class Window(QMainWindow):
     shareStage=Signal(str)
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.83'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.84'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -1526,8 +1526,11 @@ class Window(QMainWindow):
         if not entry:return
         from banner_editor import BannerEditor
         try:
-            editor=BannerEditor(entry,self,total_count=len(self.entries))
-            if editor.exec():self.set_banner(entry['id'],editor.selection(),editor.text_options())
+            default_size = self.settings.value('banner/textSize', 10, type=int)
+            editor = BannerEditor(entry, self, total_count=len(self.entries), default_text_size=default_size)
+            if editor.exec():
+                self.set_banner(entry['id'], editor.selection(), editor.text_options())
+                self.settings.setValue('banner/textSize', editor.text_size.value())
         except Exception as exc:QMessageBox.warning(self,'배너 선택 실패',str(exc))
     def set_banner(self,identifier,rect,text_options=None):
         probe=dict(self.entries[identifier],banner_rect=list(rect))

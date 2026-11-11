@@ -16,11 +16,12 @@ class BannerPreview(ImageCanvas):
 
 
 class BannerEditor(QDialog):
-    def __init__(self,entry,parent=None,total_count=0):
+    def __init__(self,entry,parent=None,total_count=0,default_text_size=10):
         super().__init__(parent);self.setWindowTitle('배너 영역과 문구');self.resize(1000,800);self.total_count=total_count
         self.image=render_entry(read_pixels(entry['path']),entry)
         layout=QVBoxLayout(self);layout.addWidget(QLabel('드래그로 새 영역 선택 · 모서리로 조절 · 휠: 확대 · Ctrl+드래그: 이동'))
-        options=dict(DEFAULT_TEXT,**entry.get('banner_text',{}))
+        options = dict(DEFAULT_TEXT, size=default_text_size / 100)
+        options.update(entry.get('banner_text', {}))
         row=QHBoxLayout();layout.addLayout(row)
         self.text_enabled=QCheckBox('문구 넣기');self.text_enabled.setChecked(options['enabled']);row.addWidget(self.text_enabled)
         row.addWidget(QLabel(f'현재 작업 {total_count}장 · {{count}}는 출력할 때 자동 계산'));row.addStretch()
