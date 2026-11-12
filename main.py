@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, 
     QAbstractItemView, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFileDialog,
     QMessageBox, QSpinBox, QAbstractSpinBox, QComboBox, QProgressBar, QScrollArea, QStyledItemDelegate, QLayout, QInputDialog, QCheckBox, QLineEdit, QMenu, QDockWidget, QToolButton, QButtonGroup, QStyle, QStackedWidget, QGridLayout, QSizePolicy)
 from exporting import prepare_output
+from color_adjust import render_colors
 from recovery import RecoveryStore,validate_document
 from mega_share import MegaClient,find_client,create_package,upload_package
 from imaging import EXTENSIONS, read_pixels, render_regions, render_entry, render_clones, render_erasers, ClonePreview, export_image, export_banner, export_pair, crop_base, edit_layers, all_regions, validate_edits, compose_with_retouch, cut_clone_depth
@@ -429,7 +430,7 @@ class Canvas(QWidget):
 class Window(QMainWindow):
     shareStage=Signal(str)
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.84'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.85'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -508,6 +509,9 @@ class Window(QMainWindow):
         self.cut_mode_button.clicked.connect(self.toggle_cut_mode);mode_bar.addWidget(self.cut_mode_button)
         self.crop_mode_button=QPushButton('사진 자르기');self.crop_mode_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.crop_mode_button.clicked.connect(self.toggle_crop_mode);mode_bar.addWidget(self.crop_mode_button)
+        color_button = QPushButton('영역 색 조절')
+        color_button.clicked.connect(self.edit_colors)
+        mode_bar.addWidget(color_button)
         rename_button=QPushButton('작업 이름 변경');rename_button.setFocusPolicy(Qt.FocusPolicy.NoFocus);rename_button.clicked.connect(self.rename_project);mode_bar.addWidget(rename_button)
         banner_button=QPushButton('배너 영역 선택');banner_button.clicked.connect(self.choose_banner);mode_bar.addWidget(banner_button)
         self.tool_controls=QWidget();mode_bar.addWidget(self.tool_controls,1)
@@ -648,8 +652,8 @@ class Window(QMainWindow):
         if entry is not None and self.cut_editor is not None and self.has_cut_changes():entry['composition']=copy.deepcopy(self.cut_editor.composition)
         if entry is not None and self.crop_editor is not None and self.crop_editor.has_changes():
             editor=self.crop_editor
-            source=copy.deepcopy(entry['crop_source']['edits'] if editor.replacing else {key:entry[key] for key in ('regions','clones','erasers','composition','crop_source') if key in entry})
-            entry.update(regions=[],clones=[],erasers=[],crop_source={'rect':list(editor.rect()),'edits':source,'mode':'cover','anchor':list(editor.anchor)})
+            source=copy.deepcopy(entry['crop_source']['edits'] if editor.replacing else {key:entry[key] for key in ('regions','clones','erasers','composition','crop_source','colors') if key in entry})
+            entry.update(regions=[],clones=[],erasers=[],colors=[],crop_source={'rect':list(editor.rect()),'edits':source,'mode':'cover','anchor':list(editor.anchor)})
             entry.pop('composition',None)
         return {'version':1,'images':entries,'view':{'current_id':current['id'] if current else None,'scroll':self.list.verticalScrollBar().value()},'export':{'name':self.export_name.text(),'follow_project_name':self.export_name_follow.isChecked()}}
     def write_recovery(self):
@@ -1094,6 +1098,26 @@ class Window(QMainWindow):
         validate_composition(composition);self.snapshot('컷 편집 / 합성')
         entry['composition']=copy.deepcopy(composition)
         self.clone_cache_key=None;self.composition_cache_key=None;self.render();self.renumber()
+    def edit_colors(self):
+        self.sync_cut_editor()
+        if self.cut_editor is not None:
+            self.finish_cut_mode(True)
+        if self.crop_editor is not None:
+            return
+        entry = self.current()
+        if entry is None:
+            return
+        from color_editor import ColorEditor
+        try:
+            editor = ColorEditor(entry, self.ordered(), self)
+            if editor.exec() and (adjustment := editor.adjustment()):
+                self.snapshot('선택 영역 색 조절')
+                entry.setdefault('colors', []).append(adjustment)
+                self.original.setChecked(False)
+                self.render()
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, '색 조절 실패', str(error))
+
     def edit_cuts(self):
         if self.crop_editor is not None:self.finish_crop_mode(True)
         if self.cut_editor is not None:return self.cut_editor
@@ -1154,8 +1178,8 @@ class Window(QMainWindow):
         entry=self.current()
         if not entry or (rect==[0.,0.,1.,1.] and not replace):return
         if not replace and len(list(edit_layers(entry)))>=64:raise ValueError('연속 자르기는 최대 63회까지 지원합니다.')
-        source=copy.deepcopy(entry['crop_source']['edits'] if replace else {key:entry[key] for key in ('regions','clones','erasers','composition','crop_source') if key in entry})
-        pending={'regions':[],'clones':[],'erasers':[],'crop_source':{'rect':list(rect),'edits':source,'mode':mode,'anchor':list(anchor or [.5,.5])}}
+        source=copy.deepcopy(entry['crop_source']['edits'] if replace else {key:entry[key] for key in ('regions','clones','erasers','composition','crop_source','colors') if key in entry})
+        pending={'regions':[],'clones':[],'erasers':[],'colors':[],'crop_source':{'rect':list(rect),'edits':source,'mode':mode,'anchor':list(anchor or [.5,.5])}}
         validate_edits(pending)
         candidate=dict(entry,**pending);candidate.pop('composition',None)
         image=self.cache.get(entry['path'])
@@ -1200,6 +1224,7 @@ class Window(QMainWindow):
             cloned=self.clone_live.result if self.clone_live is not None and entry is self.clone_live_entry else self.committed_clones(entry,image)
             image=render_regions(cloned,entry['regions']) if entry['regions'] else cloned
             image=render_erasers(image,entry.get('erasers',[]))
+            image=render_colors(image,entry.get('colors',[]))
         self.canvas.pixmap=QPixmap.fromImage(to_qimage(image))
         self.canvas.regions=[] if self.original.isChecked() else entry['regions']; self.canvas.update()
     def region_event(self,event):

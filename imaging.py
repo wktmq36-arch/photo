@@ -1,6 +1,7 @@
 from PIL import Image, ImageOps, ImageDraw, ImageFilter, ImageChops
 from pathlib import Path
 import math
+from color_adjust import render_colors, validate_colors
 from composition import render_composition,validate_composition
 from banner_text import render_banner_text,validate_banner_text
 
@@ -33,6 +34,7 @@ def validate_edits(entry):
     def valid_point(point):
         return isinstance(point,(list,tuple)) and len(point)==2 and all(isinstance(v,(int,float)) and math.isfinite(v) and 0<=v<=1 for v in point)
     for layer in edit_layers(entry):
+        validate_colors(layer.get('colors', []))
         if 'composition' in layer:validate_composition(layer['composition'],check_images=True)
         if not isinstance(layer.get('regions'),list) or not isinstance(layer.get('clones',[]),list):raise ValueError('잘못된 편집 데이터')
         if not isinstance(layer.get('erasers',[]),list):raise ValueError('잘못된 지우개 데이터')
@@ -241,7 +243,7 @@ def render_entry(image,entry,include_mosaic=True):
     composed=compose_with_retouch(crop_base(image,entry,include_mosaic),entry,include_mosaic=include_mosaic)
     cloned=render_clones(composed,entry.get('clones',[])[cut_clone_depth(entry):])
     censored=render_regions(cloned,entry['regions']) if include_mosaic and entry['regions'] else cloned
-    return render_erasers(censored,entry.get('erasers',[]))
+    return render_colors(render_erasers(censored,entry.get('erasers',[])), entry.get('colors', []))
 
 def export_image(entry, destination, fmt, include_mosaic=True):
     result = render_entry(read_pixels(entry['path']), entry, include_mosaic=include_mosaic)
@@ -354,7 +356,7 @@ def export_pair(entry, index, destination, fmt, stem, outputs=None, main_index=N
         if outputs.get('uncen'):
             suffix=Path(entry['path']).suffix
             original_output=target('uncen',suffix)
-            if any(entry.get(field) for field in ('crop_source','composition','clones','erasers')):
+            if any(entry.get(field) for field in ('crop_source','composition','clones','erasers','colors')):
                 original_format={'.webp':'WEBP','.png':'PNG','.jpg':'JPEG','.jpeg':'JPEG','.bmp':'BMP','.tif':'TIFF','.tiff':'TIFF'}[suffix.lower()]
                 export_image(entry,original_output,original_format,include_mosaic=False)
             else:strip_metadata(entry['path'],original_output)
