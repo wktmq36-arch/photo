@@ -1,4 +1,4 @@
-from PIL import Image
+from PIL import Image, ImageChops
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QHBoxLayout,
                                QLabel, QSpinBox, QVBoxLayout)
@@ -21,7 +21,7 @@ class ColorCanvas(SourceCanvas):
                 and not event.modifiers() & Qt.KeyboardModifier.ControlModifier):
             self.update_target()
             if self.target.contains(event.position()):
-                self.pick(self.point(event.position()))
+                self.pick(self.point(event.position()), bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier))
             return
         super().mousePressEvent(event)
 
@@ -32,7 +32,7 @@ class ColorEditor(QDialog):
         self.setWindowTitle('선택 영역 색 조절')
         self.resize(1150, 750)
         self.image = self.preview(entry)
-        self.seed = None
+        self.seeds = []
         self.selected = None
         self.mask = None
         layout = QVBoxLayout(self)
@@ -45,7 +45,7 @@ class ColorEditor(QDialog):
         self.hue = self.number(controls, '색상 °', -180, 180)
         self.saturation = self.number(controls, '채도', -100, 100)
         self.value = self.number(controls, '명도', -100, 100)
-        self.guide = QLabel('눈 안쪽을 클릭해 이어진 비슷한 색을 선택하세요.')
+        self.guide = QLabel('클릭: 새 선택 · Shift+클릭: 영역 추가')
         layout.addWidget(self.guide)
         views = QHBoxLayout()
         layout.addLayout(views, 1)
@@ -102,19 +102,25 @@ class ColorEditor(QDialog):
 
     def change_mode(self, index):
         self.canvas.wand = index == 0
-        self.seed = None
+        self.seeds = []
         self.canvas.clear_selection()
         self.tolerance.setEnabled(self.canvas.wand)
-        self.guide.setText('눈 안쪽을 클릭해 이어진 비슷한 색을 선택하세요.' if self.canvas.wand else '드래그해 색을 조절할 사각형을 그리세요.')
+        self.guide.setText('클릭: 새 선택 · Shift+클릭: 영역 추가' if self.canvas.wand else '드래그해 색을 조절할 사각형을 그리세요.')
 
-    def pick(self, point):
-        self.seed = tuple(min(size - 1, int(v * size)) for v, size in zip(point, self.image.size))
+    def pick(self, point, add=False):
+        seed = tuple(min(size - 1, int(v * size)) for v, size in zip(point, self.image.size))
+        if not add:
+            self.seeds.clear()
+        if seed not in self.seeds:
+            self.seeds.append(seed)
         self.reselect()
 
     def reselect(self):
-        if self.seed is None:
+        if not self.seeds:
             return
-        mask = wand_mask(self.image, self.seed, self.tolerance.value())
+        mask = Image.new('L', self.image.size)
+        for seed in self.seeds:
+            mask = ImageChops.lighter(mask, wand_mask(self.image, seed, self.tolerance.value()))
         box = mask.getbbox()
         if box is None:
             return
