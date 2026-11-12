@@ -2,7 +2,7 @@ import colorsys
 
 from PIL import Image, ImageChops, ImageStat
 from PySide6.QtCore import Qt, QTimer, QSize
-from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QHBoxLayout,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout,
                                QLabel, QListWidget, QListWidgetItem, QPushButton, QSpinBox, QVBoxLayout)
 from pathlib import Path
 
@@ -33,6 +33,7 @@ class ColorEditor(QDialog):
         super().__init__(parent)
         self.setWindowTitle('선택 영역 색 조절')
         self.resize(1150, 750)
+        self.settings = getattr(parent, 'settings', None)
         self.image = self.preview(entry)
         self.seeds = []
         self.selected = None
@@ -53,7 +54,12 @@ class ColorEditor(QDialog):
         layout.addLayout(views, 1)
         self.canvas = ColorCanvas(self.pick)
         self.canvas.set_image(self.image)
-        views.addWidget(self.canvas, 1)
+        target = QVBoxLayout()
+        views.addLayout(target, 1)
+        self.show_result = QCheckBox('보정 후 미리보기')
+        self.show_result.setChecked(True)
+        target.addWidget(self.show_result)
+        target.addWidget(self.canvas, 1)
         reference = QVBoxLayout()
         views.addLayout(reference, 1)
         self.entries = entries
@@ -100,6 +106,28 @@ class ColorEditor(QDialog):
         self.tolerance.valueChanged.connect(self.refresh_reference)
         for control in (self.hue, self.saturation, self.value):
             control.valueChanged.connect(lambda: self.timer.start())
+        self.show_result.toggled.connect(self.refresh)
+        if self.settings is not None:
+            geometry = self.settings.value('colorEditor/geometry')
+            if geometry is not None:
+                self.restoreGeometry(geometry)
+            for key, control in self.number_options():
+                control.setValue(self.settings.value('colorEditor/' + key, control.value(), type=int))
+            self.mode.setCurrentIndex(self.settings.value('colorEditor/mode', 0, type=int))
+            self.show_result.setChecked(self.settings.value('colorEditor/showResult', True, type=bool))
+            self.finished.connect(self.save_options)
+
+    def number_options(self):
+        return (('tolerance', self.tolerance), ('hue', self.hue),
+                ('saturation', self.saturation), ('value', self.value))
+
+    def save_options(self):
+        self.settings.setValue('colorEditor/geometry', self.saveGeometry())
+        self.settings.setValue('colorEditor/mode', self.mode.currentIndex())
+        self.settings.setValue('colorEditor/showResult', self.show_result.isChecked())
+        for key, control in self.number_options():
+            self.settings.setValue('colorEditor/' + key, control.value())
+
 
     @staticmethod
     def number(layout, label, minimum, maximum, value=0):
@@ -238,4 +266,8 @@ class ColorEditor(QDialog):
         edit = self.adjustment()
         self.apply_button.setEnabled(edit is not None)
         self.match_button.setEnabled(bool(self.selected) and self.reference_mask is not None)
-        self.canvas.set_image(render_colors(self.image, [edit]) if edit else self.image)
+        self.canvas.show_selection = edit is None
+        image = self.image
+        if edit is not None and self.show_result.isChecked():
+            image = render_colors(image, [edit])
+        self.canvas.set_image(image)

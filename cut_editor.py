@@ -91,13 +91,13 @@ class ImageCanvas(QWidget):
 class SourceCanvas(ImageCanvas):
     selectionChanged=Signal(object)
     def __init__(self):
-        super().__init__();self.selection=None;self.action=None;self.redraw_on_drag=False
+        super().__init__();self.selection=None;self.action=None;self.redraw_on_drag=False;self.show_selection=True
     def clear_selection(self):
         self.selection=None;self.selectionChanged.emit(None);self.update()
     def paintEvent(self,event):
         painter=QPainter(self);self.paint_image(painter)
         if not self.pixmap:return
-        rect=self.selection
+        rect=self.selection if self.show_selection else None
         if self.action=='draw' and self.start is not None:rect=self.rectangle(self.start,self.end)
         if rect:
             selected=self.image_rect(rect);t=self.target
