@@ -430,7 +430,7 @@ class Canvas(QWidget):
 class Window(QMainWindow):
     shareStage=Signal(str)
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.85'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.86'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -557,7 +557,7 @@ class Window(QMainWindow):
         self.tool.currentIndexChanged.connect(self.change_tool)
         self.tool.activated.connect(lambda:self.list.setFocus(Qt.FocusReason.OtherFocusReason))
         brush_tools.addWidget(QLabel('브러시 크기'))
-        self.brush_size=NumericControl(); self.brush_size.setRange(5,200); self.brush_size.setValue(50)
+        self.brush_size=NumericControl(); self.brush_size.setRange(1,200); self.brush_size.setValue(50)
         self.brush_size.valueChanged.connect(self.change_brush_size)
         brush_tools.addWidget(self.brush_size)
         softness_tools=brush_tools
