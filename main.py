@@ -1,3 +1,4 @@
+from PIL import Image
 from area_moves import render_moves
 import sys, json, uuid, copy, time, re, threading
 from datetime import datetime
@@ -439,7 +440,7 @@ class Canvas(QWidget):
 class Window(QMainWindow):
     shareStage=Signal(str)
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.101'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.102'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -836,6 +837,8 @@ class Window(QMainWindow):
     def undo(self):
         if self.crop_editor is not None:return
         if self.cut_editor is not None:self.cut_editor.undo();return
+        if self.canvas.tool == 'select' and self.area_tool.undo_selection():
+            return
         if not self.history:return
         label=self.history_labels.pop() if self.history_labels else '작업 변경'
         self.redo_stack.append((self.capture_state(),label))
@@ -1015,6 +1018,9 @@ class Window(QMainWindow):
         self.list.blockSignals(False)
         self.renumber(); self.selection_changed()
     def navigate(self,step):
+        if self.canvas.tool == 'select' and self.area_tool.moving:
+            self.area_tool.nudge(step, 0)
+            return
         visible=self.visible_rows()
         if not visible:return
         index=visible.index(self.list.currentRow()) if self.list.currentRow() in visible else 0
@@ -1276,7 +1282,13 @@ class Window(QMainWindow):
             image=render_colors(image,pending_colors(entry))
             image = render_moves(image, entry.get('moves', []))
         if self.canvas.tool == 'select':
-            self.area_tool.set_base(image)
+            try:
+                with Image.open(entry['path']) as source:
+                    orientation = source.getexif().get(274)
+                    size = source.size[::-1] if orientation in (5, 6, 7, 8) else source.size
+            except (OSError, ValueError):
+                size = image.size
+            self.area_tool.set_base(image, size)
         self.canvas.pixmap=QPixmap.fromImage(to_qimage(image))
         self.canvas.regions=[] if self.original.isChecked() else entry['regions']; self.canvas.update()
     def region_event(self,event):
