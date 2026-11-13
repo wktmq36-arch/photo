@@ -197,6 +197,21 @@ class ColorEditor(QDialog):
         seeds[:] = previous
         (self.refresh_reference if reference else self.reselect)()
 
+    def restore_reference_selection(self, saved):
+        if self.reference_image is None or not isinstance(saved, list):
+            return
+        width, height = self.reference_image.size
+        for operation in saved:
+            if not isinstance(operation, (list, tuple)) or len(operation) != 2:
+                continue
+            seed, subtract = operation
+            if (isinstance(seed, (list, tuple)) and len(seed) == 2
+                    and type(seed[0]) is int and type(seed[1]) is int
+                    and 0 <= seed[0] < width and 0 <= seed[1] < height
+                    and type(subtract) is bool):
+                self.reference_seeds.append((tuple(seed), subtract))
+        self.refresh_reference()
+
     def refresh_reference(self):
         self.palette = None
         self.refresh()

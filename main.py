@@ -439,7 +439,7 @@ class Canvas(QWidget):
 class Window(QMainWindow):
     shareStage=Signal(str)
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.99'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.100'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -451,6 +451,7 @@ class Window(QMainWindow):
         self.recent_projects=[path for path in self.recent_projects if isinstance(path,str)]
         self.entries={}; self.cache=OrderedDict(); self.pending=set(); self.history=[]; self.history_labels=[]; self.redo_stack=[]; self.snapshot_cache={};  self.dirty=False; self.project=None
         self.color_reference_id = None
+        self.color_reference_seeds = []
         self.clone_cache_key=None;self.clone_cache_image=None;self.clone_live=None;self.clone_live_entry=None
         self.cut_clipboard=None;self.composition_cache_key=None;self.composition_cache_image=None
         self.share_cancel=None;self.close_after_share=False;self.share_phase='';self.share_started=0
@@ -666,7 +667,7 @@ class Window(QMainWindow):
             source=copy.deepcopy(entry['crop_source']['edits'] if editor.replacing else {key:entry[key] for key in ('regions','clones','erasers','composition','crop_source','colors','blends','moves') if key in entry})
             entry.update(regions=[],clones=[],erasers=[],colors=[],blends=[],moves=[],crop_source={'rect':list(editor.rect()),'edits':source,'mode':'cover','anchor':list(editor.anchor)})
             entry.pop('composition',None)
-        return {'version':1,'images':entries,'view':{'current_id':current['id'] if current else None,'scroll':self.list.verticalScrollBar().value(),'color_reference_id':self.color_reference_id},'export':{'name':self.export_name.text(),'follow_project_name':self.export_name_follow.isChecked()}}
+        return {'version':1,'images':entries,'view':{'current_id':current['id'] if current else None,'scroll':self.list.verticalScrollBar().value(),'color_reference_id':self.color_reference_id,'color_reference_seeds':self.color_reference_seeds},'export':{'name':self.export_name.text(),'follow_project_name':self.export_name_follow.isChecked()}}
     def write_recovery(self):
         if not (self.dirty or self.has_cut_changes() or (self.crop_editor and self.crop_editor.has_changes())):return False
         try:
@@ -1152,9 +1153,11 @@ class Window(QMainWindow):
             if reference_row >= 0:
                 editor.pages.setCurrentRow(reference_row)
                 editor.pages.scrollToItem(editor.pages.item(reference_row))
+                editor.restore_reference_selection(self.color_reference_seeds)
             accepted = editor.exec()
             row = editor.pages.currentRow()
             self.color_reference_id = editor.entries[row]['id'] if row >= 0 else None
+            self.color_reference_seeds = editor.reference_seeds[:]
             if accepted and (adjustment := editor.adjustment()):
                 self.snapshot('선택 영역 색 조절')
                 entry.setdefault('colors', []).append(adjustment)
@@ -1437,6 +1440,7 @@ class Window(QMainWindow):
         self.clone_timer.stop();self.clone_live=None;self.clone_live_entry=None
         self.clone_cache_key=None;self.composition_cache_key=None;self.cut_clipboard=None
         self.color_reference_id = None
+        self.color_reference_seeds = []
         self.populate([]);self.history=[];self.history_labels=[];self.redo_stack=[];self.snapshot_cache={}
         self.project=None;self.dirty=False;self.update_history_controls();self.refresh_recent_projects()
         self.pending_project_name='작업'
@@ -1461,6 +1465,7 @@ class Window(QMainWindow):
     def restore_project_view(self,view):
         if not isinstance(view,dict):return
         self.color_reference_id = view.get('color_reference_id')
+        self.color_reference_seeds = view.get('color_reference_seeds', [])
         for row in range(self.list.count()):
             if self.list.item(row).data(Qt.ItemDataRole.UserRole)==view.get('current_id'):
                 if self.list.item(row).isHidden():break
@@ -1477,7 +1482,7 @@ class Window(QMainWindow):
         self.sync_cut_editor()
         try:
             entry=self.current()
-            view={'current_id':entry['id'] if entry else None,'scroll':self.list.verticalScrollBar().value(),'color_reference_id':self.color_reference_id}
+            view={'current_id':entry['id'] if entry else None,'scroll':self.list.verticalScrollBar().value(),'color_reference_id':self.color_reference_id,'color_reference_seeds':self.color_reference_seeds}
             export_name=Path(path).name.removesuffix('.photo.json') if self.export_name_follow.isChecked() else self.export_name.text()
             temp=Path(path+'.tmp'); temp.write_text(json.dumps({'version':1,'images':self.ordered(),'view':view,'export':{'name':export_name,'follow_project_name':self.export_name_follow.isChecked()}},ensure_ascii=False,indent=2),encoding='utf-8'); temp.replace(path)
             self.project=str(Path(path).resolve());self.set_export_name(export_name); self.dirty=False;self.clear_recovery();self.remember_project(self.project)
@@ -1704,7 +1709,7 @@ class Window(QMainWindow):
         if self.project:
             entry=self.current()
             self.settings.setValue('session/lastProject',self.project)
-            self.settings.setValue('session/lastView',json.dumps({'path':self.project,'current_id':entry['id'] if entry else None,'scroll':self.list.verticalScrollBar().value(),'color_reference_id':self.color_reference_id}))
+            self.settings.setValue('session/lastView',json.dumps({'path':self.project,'current_id':entry['id'] if entry else None,'scroll':self.list.verticalScrollBar().value(),'color_reference_id':self.color_reference_id,'color_reference_seeds':self.color_reference_seeds}))
         self.clear_recovery();self.recovery_timer.stop();self.recovery_debounce.stop()
         geometry=self._last_window_geometry if self.isMinimized() else self.saveGeometry()
         if geometry is not None:self.settings.setValue('layout/windowGeometry',geometry)
