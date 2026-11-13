@@ -434,7 +434,7 @@ class Canvas(QWidget):
 class Window(QMainWindow):
     shareStage=Signal(str)
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.97'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.98'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -517,7 +517,7 @@ class Window(QMainWindow):
         color_button = QPushButton('마법봉 · 영역 색 조절')
         color_button.clicked.connect(self.edit_colors)
         mode_bar.addWidget(color_button)
-        move_button = QPushButton('영역 이동·크기 조절')
+        move_button = QPushButton('영역 편집')
         move_button.clicked.connect(self.edit_area_move)
         mode_bar.addWidget(move_button)
         rename_button=QPushButton('작업 이름 변경');rename_button.setFocusPolicy(Qt.FocusPolicy.NoFocus);rename_button.clicked.connect(self.rename_project);mode_bar.addWidget(rename_button)
@@ -1113,9 +1113,14 @@ class Window(QMainWindow):
             return
         from area_move_editor import AreaMoveEditor
         try:
-            editor = AreaMoveEditor(render_entry(read_pixels(entry['path']), entry), self)
+            image = render_entry(read_pixels(entry['path']), entry)
+            editor = AreaMoveEditor(image, self)
             if editor.exec() and (adjustment := editor.adjustment()):
-                self.snapshot('영역 이동·크기 조절')
+                if editor.cut:
+                    from area_moves import selection_patch
+                    _, patch, _ = selection_patch(image, adjustment)
+                    QApplication.clipboard().setImage(to_qimage(patch))
+                self.snapshot('영역 편집')
                 entry.setdefault('moves', []).append(adjustment)
                 self.original.setChecked(False)
                 self.render()
