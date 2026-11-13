@@ -1,13 +1,11 @@
-import colorsys
-
-from PIL import Image, ImageChops, ImageFilter, ImageStat
+from PIL import Image, ImageChops, ImageFilter
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtCore import Qt, QTimer, QSize
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout,
                                QLabel, QListWidget, QListWidgetItem, QPushButton, QSpinBox, QVBoxLayout)
 from pathlib import Path
 
-from color_adjust import encode_mask, render_colors, wand_mask
+from color_adjust import encode_mask, render_colors, tonal_palette, wand_mask
 from cut_editor import SourceCanvas
 from imaging import read_pixels, render_entry
 
@@ -24,7 +22,10 @@ class ColorCanvas(SourceCanvas):
                 and not event.modifiers() & Qt.KeyboardModifier.ControlModifier):
             self.update_target()
             if self.target.contains(event.position()):
-                self.pick(self.point(event.position()), bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier))
+                modifiers = event.modifiers()
+                self.pick(self.point(event.position()),
+                          add=bool(modifiers & Qt.KeyboardModifier.ShiftModifier),
+                          subtract=bool(modifiers & Qt.KeyboardModifier.AltModifier))
             return
         super().mousePressEvent(event)
 
@@ -37,6 +38,7 @@ class ColorEditor(QDialog):
         self.settings = getattr(parent, 'settings', None)
         self.image = self.preview(entry)
         self.seeds = []
+        self.palette = None
         self.target_mask = None
         self.selected = None
         self.mask = None
@@ -50,7 +52,7 @@ class ColorEditor(QDialog):
         self.hue = self.number(controls, '색상 °', -180, 180)
         self.saturation = self.number(controls, '채도', -100, 100)
         self.value = self.number(controls, '명도', -100, 100)
-        self.guide = QLabel('클릭: 새 선택 · Shift+클릭: 영역 추가')
+        self.guide = QLabel('클릭: 새 선택 · Shift+클릭: 추가 · Alt+클릭: 빼기')
         layout.addWidget(self.guide)
         views = QHBoxLayout()
         layout.addLayout(views, 1)
@@ -72,7 +74,7 @@ class ColorEditor(QDialog):
         self.selection_history = []
         self.undo_selection_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)
         self.undo_selection_shortcut.activated.connect(self.undo_selection)
-        reference.addWidget(QLabel('비교 페이지 · 마법봉 클릭 / Shift+클릭으로 기준 영역 추가'))
+        reference.addWidget(QLabel('비교 페이지 · 마법봉 · Shift+클릭: 추가 · Alt+클릭: 빼기'))
         self.pages = QListWidget()
         self.pages.setViewMode(QListWidget.ViewMode.IconMode)
         self.pages.setMovement(QListWidget.Movement.Static)
@@ -155,6 +157,7 @@ class ColorEditor(QDialog):
             self.pages.item(row).setIcon(item.icon())
 
     def load_reference(self, row):
+        self.palette = None
         self.reference_image = None
         self.reference_mask = None
         self.reference_seeds.clear()
@@ -167,15 +170,19 @@ class ColorEditor(QDialog):
         except (OSError, ValueError) as error:
             self.reference.set_image(None)
             self.guide.setText(str(error))
+        self.refresh()
 
-    def pick_reference(self, point, add=False):
+    def pick_reference(self, point, add=False, subtract=False):
         if self.reference_image is None:
             return
-        self.select_seed(self.seed_at(self.reference_image, point), add, reference=True)
+        self.select_seed(self.seed_at(self.reference_image, point), add, reference=True, subtract=subtract)
 
-    def select_seed(self, seed, add, reference=False):
+    def select_seed(self, seed, add, reference=False, subtract=False):
         seeds = self.reference_seeds if reference else self.seeds
-        updated = seeds + [seed] if add and seed not in seeds else seeds[:] if add else [seed]
+        operation = (seed, subtract)
+        if subtract and not seeds:
+            return
+        updated = [*seeds, operation] if add or subtract else [operation]
         if updated == seeds:
             return
         self.selection_history.append((reference, seeds[:]))
@@ -191,6 +198,8 @@ class ColorEditor(QDialog):
         (self.refresh_reference if reference else self.reselect)()
 
     def refresh_reference(self):
+        self.palette = None
+        self.refresh()
         if not self.reference_seeds:
             self.reference_mask = None
             self.reference.set_image(self.reference_image)
@@ -198,8 +207,10 @@ class ColorEditor(QDialog):
             return
         image = self.reference_image
         self.reference_mask = self.combined_mask(image, self.reference_seeds)
-        self.reference.set_image(self.highlight(image, self.reference_mask))
-        self.match_button.setEnabled(bool(self.selected))
+        if not self.reference_mask.getbbox():
+            self.reference_mask = None
+        self.reference.set_image(self.highlight(image, self.reference_mask) if self.reference_mask else image)
+        self.match_button.setEnabled(bool(self.selected) and self.reference_mask is not None)
 
     @staticmethod
     def seed_at(image, point):
@@ -207,8 +218,9 @@ class ColorEditor(QDialog):
 
     def combined_mask(self, image, seeds):
         mask = Image.new('L', image.size)
-        for seed in seeds:
-            mask = ImageChops.lighter(mask, wand_mask(image, seed, self.tolerance.value()))
+        for seed, subtract in seeds:
+            region = wand_mask(image, seed, self.tolerance.value())
+            mask = ImageChops.subtract(mask, region) if subtract else ImageChops.lighter(mask, region)
         return mask
 
     @staticmethod
@@ -223,21 +235,10 @@ class ColorEditor(QDialog):
         from imaging import crop_box
         box = crop_box(self.image, self.selected)
         patch = self.image.crop(box).convert('RGB')
-        mask = self.combined_mask(self.image, self.seeds).crop(box) if self.seeds else None
-        source = ImageStat.Stat(patch, mask).mean
-        target = ImageStat.Stat(self.reference_image.convert('RGB'), self.reference_mask).mean
-        h, s, v = colorsys.rgb_to_hsv(*(value / 255 for value in source))
-        target_h, target_s, target_v = colorsys.rgb_to_hsv(*(value / 255 for value in target))
-
-        def adjustment(current, goal):
-            if goal == current:
-                return 0
-            available = 1 - current if goal > current else current
-            return round(100 * (goal - current) / available)
-
-        self.hue.setValue(round(((target_h - h + .5) % 1 - .5) * 360))
-        self.saturation.setValue(adjustment(s, target_s))
-        self.value.setValue(adjustment(v, target_v))
+        mask = self.target_mask.crop(box) if self.target_mask is not None else None
+        self.palette = tonal_palette(patch, mask, self.reference_image, self.reference_mask)
+        for control in (self.hue, self.saturation, self.value):
+            control.setValue(0)
         self.refresh()
 
     def change_mode(self, index):
@@ -246,12 +247,13 @@ class ColorEditor(QDialog):
         self.selection_history = [step for step in self.selection_history if step[0]]
         self.canvas.clear_selection()
         self.tolerance.setEnabled(True)
-        self.guide.setText('클릭: 새 선택 · Shift+클릭: 영역 추가' if self.canvas.wand else '드래그해 색을 조절할 사각형을 그리세요.')
+        self.guide.setText('클릭: 새 선택 · Shift+클릭: 추가 · Alt+클릭: 빼기' if self.canvas.wand else '드래그해 색을 조절할 사각형을 그리세요.')
 
-    def pick(self, point, add=False):
-        self.select_seed(self.seed_at(self.image, point), add)
+    def pick(self, point, add=False, subtract=False):
+        self.select_seed(self.seed_at(self.image, point), add, subtract=subtract)
 
     def reselect(self):
+        self.palette = None
         if not self.seeds:
             self.target_mask = None
             self.selected = None
@@ -261,6 +263,7 @@ class ColorEditor(QDialog):
         mask = self.combined_mask(self.image, self.seeds)
         box = mask.getbbox()
         if box is None:
+            self.rectangle_selected(None)
             return
         self.selected = [v / self.image.size[i % 2] for i, v in enumerate(box)]
         self.mask = encode_mask(mask.crop(box))
@@ -268,17 +271,20 @@ class ColorEditor(QDialog):
         self.refresh()
 
     def rectangle_selected(self, rect):
+        self.palette = None
         self.selected = rect
         self.target_mask = None
         self.mask = None
         self.refresh()
 
     def adjustment(self):
-        if not self.selected or not any(c.value() for c in (self.hue, self.saturation, self.value)):
+        if not self.selected or (self.palette is None and not any(c.value() for c in (self.hue, self.saturation, self.value))):
             return None
         edit = dict(rect=self.selected, hue=self.hue.value(), saturation=self.saturation.value(), value=self.value.value())
         if self.mask is not None:
             edit['mask'] = self.mask
+        if self.palette is not None:
+            edit['palette'] = self.palette
         return edit
 
     def refresh(self):
