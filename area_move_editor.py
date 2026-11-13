@@ -1,7 +1,7 @@
 from PIL import ImageChops, ImageFilter
 from color_adjust import encode_mask, wand_mask
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QHBoxLayout,
+from PySide6.QtWidgets import (QComboBox, QWidget, QHBoxLayout,
                                QLabel, QPushButton, QSpinBox, QVBoxLayout)
 
 from area_moves import render_moves
@@ -25,7 +25,7 @@ class MoveCanvas(CutSourceCanvas):
         if self.editor.shape.currentIndex() == 2 and not self.editor.moving:
             if self.begin_pan(event):
                 return
-            if event.button() == Qt.MouseButton.LeftButton and self.target.contains(event.position()):
+            if event.button() == Qt.MouseButton.LeftButton and self.pixmap and self.target.contains(event.position()):
                 self.editor.pick(self.point(event.position()), event.modifiers())
             return
         super().mousePressEvent(event)
@@ -50,19 +50,15 @@ class MoveCanvas(CutSourceCanvas):
         self.editor.refresh()
 
 
-class AreaMoveEditor(QDialog):
-    def __init__(self, image, parent):
+class AreaMoveEditor(QWidget):
+    def __init__(self, parent, commit):
         super().__init__(parent)
-        self.setWindowTitle('영역 이동·크기 조절')
-        self.resize(1050, 760)
-        self.image = image.copy()
-        self.image.thumbnail((1200, 1200))
+        self.commit = commit
+        self.image = None
         self.moving = False
         self.offset = [0., 0.]
         self.area = None
         self.mask = None
-        self.removal = None
-        self.cut = False
         layout = QVBoxLayout(self)
         tools = QHBoxLayout()
         layout.addLayout(tools)
@@ -95,15 +91,11 @@ class AreaMoveEditor(QDialog):
         self.guide = QLabel('드래그로 옮기거나 확대할 부분을 선택하세요.')
         layout.addWidget(self.guide)
         self.canvas = MoveCanvas(self)
-        self.canvas.set_image(self.image)
         layout.addWidget(self.canvas, 1)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        self.apply_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
-        self.apply_button.setText('적용')
+        self.apply_button = QPushButton('적용')
         self.apply_button.setEnabled(False)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        self.apply_button.clicked.connect(self.apply)
+        tools.addWidget(self.apply_button)
         self.timer = QTimer(self, singleShot=True, interval=25)
         self.timer.timeout.connect(self.refresh)
         self.shape.currentIndexChanged.connect(self.set_shape)
@@ -141,10 +133,30 @@ class AreaMoveEditor(QDialog):
             data['mask'] = encode_mask(self.mask.crop(self.mask.getbbox()))
         return data
 
+    def set_base(self, image):
+        self.timer.stop()
+        self.image = image.copy() if image is not None else None
+        if self.image is not None:
+            self.image.thumbnail((1200, 1200))
+        self.moving = False
+        self.canvas.drag_start = None
+        self.canvas.tracing = False
+        self.canvas.start = None
+        self.canvas.action = None
+        self.shape.setEnabled(True)
+        self.scale.setEnabled(False)
+        self.move_button.setText('이동·크기 조절 시작')
+        self.set_shape(self.shape.currentIndex())
+        self.refresh()
+
+    def apply(self):
+        change = self.adjustment()
+        if change is not None:
+            self.commit(change, False)
+
     def remove_selection(self, cut):
-        self.removal = dict(self.selected_area(), remove=True)
-        self.cut = cut
-        self.accept()
+        if self.canvas.selection is not None:
+            self.commit(dict(self.selected_area(), remove=True), cut)
 
     def set_shape(self, index):
         self.mask = None
@@ -181,8 +193,6 @@ class AreaMoveEditor(QDialog):
         self.refresh()
 
     def adjustment(self):
-        if self.removal is not None:
-            return self.removal
         if not self.moving or (self.offset == [0., 0.] and self.scale.value() == 100):
             return None
         return dict(self.area, offset=self.offset[:], scale=self.scale.value())

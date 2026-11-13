@@ -38,6 +38,11 @@ def tool_icon(index):
         painter.setPen(QPen(QColor('#205a91'),2));painter.setBrush(QColor('#205a91'));painter.drawEllipse(7,16,9,9)
         painter.setPen(Qt.PenStyle.NoPen)
         for x,y in [(4,25),(10,27),(3,19)]:painter.drawRect(x,y,4,4)
+    elif index==5:
+        painter.setPen(QPen(QColor('#205a91'), 2, Qt.PenStyle.DashLine))
+        painter.drawRect(5, 5, 22, 22)
+        painter.setPen(QPen(QColor('#205a91'), 2))
+        painter.drawLine(10, 10, 19, 19)
     elif index==4:
         for offset in (0, 5, 10):
             painter.drawLine(5, 22 + offset // 2, 25 - offset // 2, 7 + offset)
@@ -67,7 +72,7 @@ class ToolPicker(QWidget):
     def __init__(self,parent=None):
         super().__init__(parent);self.index=0;self.buttons=[];self.group=QButtonGroup(self);self.group.setExclusive(True)
         layout=QHBoxLayout(self);layout.setContentsMargins(0,0,0,0);layout.setSpacing(5)
-        for index,label in enumerate(['박스 모자이크','브러시 모자이크','복제 도장 (Alt+클릭으로 기준점)','흰색 지우개','색 섞기 브러시']):
+        for index,label in enumerate(['박스 모자이크','브러시 모자이크','복제 도장 (Alt+클릭으로 기준점)','흰색 지우개','색 섞기 브러시','선택툴']):
             button=QToolButton();button.setIcon(tool_icon(index));button.setIconSize(QSize(23,23));button.setCheckable(True)
             button.setToolTip(label);button.setAccessibleName(label);button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.setFixedSize(32,30);self.group.addButton(button,index);layout.addWidget(button);self.buttons.append(button)
@@ -434,11 +439,11 @@ class Canvas(QWidget):
 class Window(QMainWindow):
     shareStage=Signal(str)
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.98'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.99'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
-        self.tool_sizes={name:max(1,min(200,self.settings.value('tools/sizes/'+name,legacy_size,type=int))) for name in ['box','brush','clone','eraser','blend']}
+        self.tool_sizes={name:max(1,min(200,self.settings.value('tools/sizes/'+name,legacy_size,type=int))) for name in ['box','brush','clone','eraser','blend','select']}
         self.export_folder=str(self.settings.value('export/folder',''))
         try:self.recent_projects=json.loads(str(self.settings.value('projects/recent','[]')))
         except (ValueError,TypeError):self.recent_projects=[]
@@ -517,9 +522,6 @@ class Window(QMainWindow):
         color_button = QPushButton('마법봉 · 영역 색 조절')
         color_button.clicked.connect(self.edit_colors)
         mode_bar.addWidget(color_button)
-        move_button = QPushButton('영역 편집')
-        move_button.clicked.connect(self.edit_area_move)
-        mode_bar.addWidget(move_button)
         rename_button=QPushButton('작업 이름 변경');rename_button.setFocusPolicy(Qt.FocusPolicy.NoFocus);rename_button.clicked.connect(self.rename_project);mode_bar.addWidget(rename_button)
         banner_button=QPushButton('배너 영역 선택');banner_button.clicked.connect(self.choose_banner);mode_bar.addWidget(banner_button)
         self.tool_controls=QWidget();mode_bar.addWidget(self.tool_controls,1)
@@ -549,6 +551,10 @@ class Window(QMainWindow):
         rl.addWidget(self.main_check)
         self.canvas=Canvas();self.canvas.setMinimumHeight(160)
         rl.addWidget(self.canvas, 1)
+        from area_move_editor import AreaMoveEditor
+        self.area_tool = AreaMoveEditor(right, self.commit_area_move)
+        rl.addWidget(self.area_tool, 1)
+        self.area_tool.hide()
         preview_tools = QWidget()
         view_controls = QHBoxLayout(preview_tools)
         view_controls.setContentsMargins(0, 0, 0, 0)
@@ -627,7 +633,7 @@ class Window(QMainWindow):
         for key in ['Ctrl+Y','Ctrl+Shift+Z']:
             shortcut=QShortcut(QKeySequence(key),self);shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
             shortcut.activated.connect(self.redo);self.redo_shortcuts.append(shortcut)
-        self.tool.setCurrentIndex(max(0,min(4,self.settings.value('tools/selected',0,type=int))))
+        self.tool.setCurrentIndex(max(0,min(5,self.settings.value('tools/selected',0,type=int))))
         self.strength.setValue(self.settings.value('tools/strength',20,type=int))
         self.change_tool(self.tool.currentIndex())
         self.clone_softness.setValue(self.settings.value('tools/softness',50,type=int))
@@ -741,8 +747,14 @@ class Window(QMainWindow):
         else:
             self.header_grid.addWidget(self.mode_controls,1,0);self.header_grid.addWidget(self.export_controls,1,1)
     def change_tool(self,index):
-        name=['box','brush','clone','eraser','blend'][index]
+        name=['box','brush','clone','eraser','blend','select'][index]
         self.canvas.tool=name;self.settings.setValue('tools/selected',index)
+        self.canvas.setVisible(name != 'select')
+        self.area_tool.setVisible(name == 'select')
+        if name == 'select':
+            self.render()
+        else:
+            self.area_tool.set_base(None)
         self.blend_label.setVisible(name == 'blend')
         self.blend_strength.setVisible(name == 'blend')
         value=self.tool_sizes[name]
@@ -1054,6 +1066,7 @@ class Window(QMainWindow):
         self.canvas.active=-1; self.original.setChecked(False)
         entry=self.current()
         self.canvas.pixmap=None; self.canvas.regions=[]; self.canvas.update()
+        self.area_tool.set_base(None)
         if not entry:self.title.setText('그림을 선택하세요'); return
         self.title.setText(Path(entry['path']).name)
         self.request_preview(entry['path'],True)
@@ -1105,25 +1118,20 @@ class Window(QMainWindow):
         validate_composition(composition);self.snapshot('컷 편집 / 합성')
         entry['composition']=copy.deepcopy(composition)
         self.clone_cache_key=None;self.composition_cache_key=None;self.render();self.renumber()
-    def edit_area_move(self):
-        self.sync_cut_editor()
-        if self.cut_editor is not None:
-            self.finish_cut_mode(True)
-        if self.crop_editor is not None or not (entry := self.current()):
+    def commit_area_move(self, adjustment, cut):
+        entry = self.current()
+        if entry is None:
             return
-        from area_move_editor import AreaMoveEditor
         try:
-            image = render_entry(read_pixels(entry['path']), entry)
-            editor = AreaMoveEditor(image, self)
-            if editor.exec() and (adjustment := editor.adjustment()):
-                if editor.cut:
-                    from area_moves import selection_patch
-                    _, patch, _ = selection_patch(image, adjustment)
-                    QApplication.clipboard().setImage(to_qimage(patch))
-                self.snapshot('영역 편집')
-                entry.setdefault('moves', []).append(adjustment)
-                self.original.setChecked(False)
-                self.render()
+            if cut:
+                from area_moves import selection_patch
+                image = render_entry(read_pixels(entry['path']), entry)
+                _, patch, _ = selection_patch(image, adjustment)
+                QApplication.clipboard().setImage(to_qimage(patch))
+            self.snapshot('영역 편집')
+            entry.setdefault('moves', []).append(adjustment)
+            self.original.setChecked(False)
+            self.render()
         except (OSError, ValueError) as error:
             QMessageBox.warning(self, '영역 이동 실패', str(error))
 
@@ -1264,6 +1272,8 @@ class Window(QMainWindow):
             image=render_erasers(image,entry.get('erasers',[]))
             image=render_colors(image,pending_colors(entry))
             image = render_moves(image, entry.get('moves', []))
+        if self.canvas.tool == 'select':
+            self.area_tool.set_base(image)
         self.canvas.pixmap=QPixmap.fromImage(to_qimage(image))
         self.canvas.regions=[] if self.original.isChecked() else entry['regions']; self.canvas.update()
     def region_event(self,event):
