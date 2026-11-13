@@ -1,3 +1,4 @@
+from area_moves import render_moves, validate_moves
 from PIL import Image, ImageOps, ImageDraw, ImageFilter, ImageChops
 from pathlib import Path
 import math
@@ -35,6 +36,7 @@ def validate_edits(entry):
         return isinstance(point,(list,tuple)) and len(point)==2 and all(isinstance(v,(int,float)) and math.isfinite(v) and 0<=v<=1 for v in point)
     for layer in edit_layers(entry):
         validate_colors(layer.get('colors', []))
+        validate_moves(layer.get('moves', []))
         if 'composition' in layer:validate_composition(layer['composition'],check_images=True)
         if not isinstance(layer.get('regions'),list) or not isinstance(layer.get('clones',[]),list):raise ValueError('잘못된 편집 데이터')
         if not isinstance(layer.get('erasers',[]),list):raise ValueError('잘못된 지우개 데이터')
@@ -285,7 +287,8 @@ def render_entry(image,entry,include_mosaic=True):
     cloned=clone_interval(composed, entry, cut_clone_depth(entry), len(entry.get('clones', [])))
     cloned = render_blends(cloned, entry.get('blends', []))
     censored=render_regions(cloned,entry['regions']) if include_mosaic and entry['regions'] else cloned
-    return render_colors(render_erasers(censored,entry.get('erasers',[])), pending_colors(entry))
+    colored = render_colors(render_erasers(censored,entry.get('erasers',[])), pending_colors(entry))
+    return render_moves(colored, entry.get('moves', []))
 
 def export_image(entry, destination, fmt, include_mosaic=True):
     result = render_entry(read_pixels(entry['path']), entry, include_mosaic=include_mosaic)
@@ -398,7 +401,7 @@ def export_pair(entry, index, destination, fmt, stem, outputs=None, main_index=N
         if outputs.get('uncen'):
             suffix=Path(entry['path']).suffix
             original_output=target('uncen',suffix)
-            if any(entry.get(field) for field in ('crop_source','composition','clones','erasers','colors','blends')):
+            if any(entry.get(field) for field in ('crop_source','composition','clones','erasers','colors','blends','moves')):
                 original_format={'.webp':'WEBP','.png':'PNG','.jpg':'JPEG','.jpeg':'JPEG','.bmp':'BMP','.tif':'TIFF','.tiff':'TIFF'}[suffix.lower()]
                 export_image(entry,original_output,original_format,include_mosaic=False)
             else:strip_metadata(entry['path'],original_output)

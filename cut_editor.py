@@ -1,3 +1,5 @@
+from area_moves import render_moves
+from PIL import Image, ImageChops, ImageDraw
 import copy
 from pathlib import Path
 from PySide6.QtCore import Qt,QRectF,QPointF,QSize,Signal,QTimer
@@ -133,6 +135,66 @@ class SourceCanvas(ImageCanvas):
             self.selection=rect if self.valid_drag(rect) else None
         self.start=None;self.end=None;self.action=None;self.selectionChanged.emit(self.selection);self.update()
     def wheelEvent(self,event):self.zoom_view(event)
+
+
+class CutSourceCanvas(SourceCanvas):
+    def __init__(self):
+        super().__init__()
+        self.freehand = False
+        self.outline = []
+        self.tracing = False
+
+    def clear_selection(self):
+        self.outline.clear()
+        super().clear_selection()
+
+    def paintEvent(self, event):
+        if not self.outline:
+            super().paintEvent(event)
+            return
+        painter = QPainter(self)
+        self.paint_image(painter)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor('#ffb347'), 2))
+        points = QPolygonF([QPointF(self.target.left() + x * self.target.width(),
+                                    self.target.top() + y * self.target.height()) for x, y in self.outline])
+        if self.tracing:
+            painter.drawPolyline(points)
+        else:
+            painter.drawPolygon(points)
+
+    def mousePressEvent(self, event):
+        if not self.freehand:
+            return super().mousePressEvent(event)
+        if self.begin_pan(event):
+            return
+        if event.button() == Qt.MouseButton.LeftButton and self.pixmap and self.target.contains(event.position()):
+            self.outline = [self.point(event.position())]
+            self.tracing = True
+            self.update()
+
+    def mouseMoveEvent(self, event):
+        if self.tracing:
+            self.outline.append(self.point(event.position()))
+            self.update()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if not self.tracing:
+            return super().mouseReleaseEvent(event)
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        self.tracing = False
+        self.outline.append(self.point(event.position()))
+        xs, ys = zip(*self.outline)
+        rect = [min(xs), min(ys), max(xs), max(ys)]
+        if len(self.outline) < 3 or not self.valid_drag(rect):
+            self.clear_selection()
+            return
+        self.selection = rect
+        self.selectionChanged.emit(rect)
+        self.update()
 
 
 class PanelCanvas(ImageCanvas):
@@ -304,8 +366,12 @@ class CutEditor(QDialog):
         self.sources.setFixedHeight(110);ll.addWidget(self.sources)
         for index,source in enumerate(entries):self.sources.addItem(QListWidgetItem(icons[index],f'{index+1:03d}  {Path(source["path"]).name}'))
         self.source_title=QLabel('');self.source_title.setWordWrap(True);ll.addWidget(self.source_title)
-        self.source_canvas=SourceCanvas();ll.addWidget(self.source_canvas,1)
+        self.source_canvas=CutSourceCanvas();ll.addWidget(self.source_canvas,1)
         source_controls=QHBoxLayout();ll.addLayout(source_controls)
+        lasso = QPushButton('자유선 선택')
+        lasso.setCheckable(True)
+        lasso.toggled.connect(self.set_source_freehand)
+        source_controls.addWidget(lasso)
         for label,fn in [('전체 선택',self.select_whole_source),('화면 맞춤',self.source_canvas.reset_view)]:
             button=QPushButton(label);button.clicked.connect(fn);source_controls.addWidget(button)
         self.source_info=QLabel('드래그: 영역 선택 · 모서리: 범위 조절 · 휠: 확대');self.source_info.setWordWrap(True);ll.addWidget(self.source_info)
@@ -417,15 +483,22 @@ class CutEditor(QDialog):
             if source['id']==self.entry['id']:source=dict(source,composition=self.composition)
             raw=read_pixels(source['path']);self.source_image=render_entry(raw,source)
             self.source_uncensored=render_entry(raw,source,include_mosaic=False)
-            self.source_canvas.selection=None;self.source_canvas.set_image(self.preview_source(),True)
+            self.source_canvas.outline.clear();self.source_canvas.selection=None;self.source_canvas.set_image(self.preview_source(),True)
             self.source_title.setText(Path(source['path']).name);self.source_selected(None)
         except Exception as exc:
             self.source_image=None;self.source_canvas.set_image(None);self.source_title.setText(f'읽기 실패: {exc}')
             self.clipboard=None;self.source_dirty=False
+    def set_source_freehand(self, enabled):
+        self.source_canvas.freehand = enabled
+        self.source_canvas.clear_selection()
+
     def source_selected(self,rect):
         self.source_dirty=True
         if self.source_image is None:return
         box=self.source_box();width,height=box[2]-box[0],box[3]-box[1]
+        if self.source_canvas.freehand:
+            self.source_info.setText(f'선택 {width} × {height}px · 드래그로 윤곽을 그린 뒤 놓으세요')
+            return
         self.source_info.setText(f'선택 {width} × {height}px · 모서리: 범위 조절 · 안쪽: 이동 · Shift+드래그: 새 선택 · 휠: 화면 확대')
     def source_box(self):
         w,h=self.source_image.size;rect=self.source_canvas.selection or [0.,0.,1.,1.]
@@ -436,7 +509,22 @@ class CutEditor(QDialog):
     def copy_selection(self):
         if self.source_image is None:return
         if self.source_dirty or self.clipboard is None:
-            self.clipboard=paired_asset(self.source_image.crop(self.source_box()),(self.source_uncensored if self.source_uncensored is not None else self.source_image).crop(self.source_box()));self.source_dirty=False
+            box = self.source_box()
+            original = self.source_uncensored if self.source_uncensored is not None else self.source_image
+            patches = [self.source_image.crop(box), original.crop(box)]
+            outline = self.source_canvas.outline
+            if outline:
+                width, height = self.source_image.size
+                mask = Image.new('L', (patches[0].width * 2, patches[0].height * 2))
+                points = [(round((x * width - box[0]) * 2), round((y * height - box[1]) * 2)) for x, y in outline]
+                ImageDraw.Draw(mask).polygon(points, fill=255)
+                mask = mask.resize(patches[0].size, Image.Resampling.BOX)
+                for patch in patches:
+                    patch.putalpha(ImageChops.multiply(patch.getchannel('A'), mask))
+            self.clipboard = paired_asset(*patches)
+            if outline:
+                self.clipboard += (True,)
+            self.source_dirty = False
         self.info.setText('선택 부분 복사 완료 · 대상에 붙여넣으세요.')
     def copy_source(self):
         self.select_whole_source();self.copy_selection()
@@ -461,6 +549,7 @@ class CutEditor(QDialog):
         self.timer.stop();image=compose_with_retouch(self.preview,dict(self.entry,composition=self.composition),self.assets_cache)
         image=clone_interval(image,self.entry,cut_clone_depth(dict(self.entry,composition=self.composition)),len(self.entry.get('clones',[])));image=render_blends(image,self.entry.get('blends',[]));image=render_regions(image,self.entry['regions']);image=render_erasers(image,self.entry.get('erasers',[]))
         image = render_colors(image, pending_colors(self.entry))
+        image = render_moves(image, self.entry.get('moves', []))
         self.canvas.set_image(image);self.canvas.cells=self.composition['cells']
         self.canvas.active=min(self.canvas.active,len(self.canvas.cells)-1)
         self.gutter.blockSignals(True);self.gutter.setValue(round(self.composition.get('gutter',0.)*self.base.width));self.gutter.blockSignals(False)
@@ -529,7 +618,7 @@ class CutEditor(QDialog):
         box=(round(rect[0]*image.width),round(rect[1]*image.height),round(rect[2]*image.width),round(rect[3]*image.height))
         if box[2]>box[0] and box[3]>box[1]:
             uncensored=render_entry(self.raw,dict(self.entry,composition=self.composition),include_mosaic=False)
-            self.clipboard=paired_asset(image.crop(box),uncensored.crop(box));self.source_image=decode_asset(self.clipboard[1]);self.source_uncensored=decode_asset(self.clipboard[2]);self.source_canvas.selection=None
+            self.clipboard=paired_asset(image.crop(box),uncensored.crop(box));self.source_image=decode_asset(self.clipboard[1]);self.source_uncensored=decode_asset(self.clipboard[2]);self.source_canvas.outline.clear();self.source_canvas.selection=None
             self.source_canvas.set_image(self.preview_source(),True);self.source_dirty=False
         self.set_mode('move');self.refresh();self.canvas.setFocus()
     def store_clipboard(self):
@@ -542,7 +631,7 @@ class CutEditor(QDialog):
         self.record()
         if self.cell() is None:
             self.composition['cells'].append({'rect':[.1,.1,.9,.9]});self.canvas.active=len(self.composition['cells'])-1;self.composition['freeform']=True
-        key=self.store_clipboard();self.cell().update(asset=key,scale=1.,offset=[0.,0.],clone_depth=len(self.entry.get('clones',[])))
+        key=self.store_clipboard();self.cell().update(asset=key,scale=1.,offset=[0.,0.],transparent=len(self.clipboard)>3 and self.clipboard[3],clone_depth=len(self.entry.get('clones',[])))
         self.set_mode('move');self.refresh();self.canvas.setFocus()
     def fill_original_resolution(self):
         self.copy_selection()
@@ -550,7 +639,7 @@ class CutEditor(QDialog):
         self.record();key=self.store_clipboard()
         # Keep earlier cuts editable underneath; this full-canvas cut is on top.
         if self.composition['cells']==[{'rect':[0.,0.,1.,1.]}]:self.composition['cells']=[]
-        self.composition['cells'].append({'rect':[0.,0.,1.,1.],'asset':key,'scale':1.,'offset':[0.,0.],'stretch':True,'clone_depth':len(self.entry.get('clones',[]))})
+        self.composition['cells'].append({'rect':[0.,0.,1.,1.],'asset':key,'scale':1.,'offset':[0.,0.],'stretch':True,'transparent':len(self.clipboard)>3 and self.clipboard[3],'clone_depth':len(self.entry.get('clones',[]))})
         self.composition['freeform']=True;self.canvas.active=len(self.composition['cells'])-1;self.set_mode('move');self.refresh()
         self.info.setText(f'선택 부분을 {self.base.width} × {self.base.height}px에 채웠습니다. 휠/드래그로 구도 조절')
     def move_layer(self,delta):
