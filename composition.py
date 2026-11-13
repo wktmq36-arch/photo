@@ -154,14 +154,15 @@ def render_composition(image,composition,cache=None,include_mosaic=True):
         box=(round(x1*width),round(y1*height),round(x2*width),round(y2*height))
         cw,ch=box[2]-box[0],box[3]-box[1]
         if cw<=0 or ch<=0:continue
-        ratio=max(cw/source.width,ch/source.height)*cell.get('scale',1.)
+        fit = min if cell.get('contain') else max
+        ratio = fit(cw/source.width, ch/source.height) * cell.get('scale', 1.)
         ratio_x=cw/source.width*cell.get('scale',1.) if cell.get('stretch') else ratio
         ratio_y=ch/source.height*cell.get('scale',1.) if cell.get('stretch') else ratio
         ox,oy=cell.get('offset',[0.,0.])
         left=(cw-source.width*ratio_x)/2+ox*cw;top=(ch-source.height*ratio_y)/2+oy*ch
         # Inverse mapping renders only the clipped cell, even at high zoom.
         patch=source.transform((cw,ch),Image.Transform.AFFINE,(1/ratio_x,0,-left/ratio_x,0,1/ratio_y,-top/ratio_y),Image.Resampling.BICUBIC)
-        background=Image.new('RGBA',(cw,ch), 'transparent' if cell.get('transparent') else 'white');background.alpha_composite(patch)
+        background=Image.new('RGBA',(cw,ch), (0, 0, 0, 0) if cell.get('transparent') else 'white');background.alpha_composite(patch)
         if composition.get('freeform'):
             gap=round(composition.get('gutter',0.)*width)
             if gap:ImageDraw.Draw(background).rectangle((0,0,cw-1,ch-1),outline='white',width=gap)
@@ -182,7 +183,7 @@ def render_composition(image,composition,cache=None,include_mosaic=True):
                 if (a[0] == b[0] and a[0] in (0, cw - 1)) or (a[1] == b[1] and a[1] in (0, ch - 1)):
                     ImageDraw.Draw(mask).line((a, b), fill=255)
             # Polygon borders follow the actual outline, rather than its bounding box.
-            background=Image.new('RGBA',(cw,ch), 'transparent' if cell.get('transparent') else 'white');background.alpha_composite(patch)
+            background=Image.new('RGBA',(cw,ch), (0, 0, 0, 0) if cell.get('transparent') else 'white');background.alpha_composite(patch)
             gap=round(composition.get('gutter',0.)*width)
             if gap:ImageDraw.Draw(background).line(points+[points[0]],fill='white',width=gap*2,joint='curve')
             border=round(cell.get('border',0.)*width)

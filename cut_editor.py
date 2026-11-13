@@ -140,6 +140,7 @@ class SourceCanvas(ImageCanvas):
 class CutSourceCanvas(SourceCanvas):
     def __init__(self):
         super().__init__()
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.freehand = False
         self.outline = []
         self.tracing = False
@@ -193,6 +194,7 @@ class CutSourceCanvas(SourceCanvas):
             self.clear_selection()
             return
         self.selection = rect
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
         self.selectionChanged.emit(rect)
         self.update()
 
@@ -626,12 +628,23 @@ class CutEditor(QDialog):
         if len(self.clipboard)>2:self.composition.setdefault('uncensored_assets',{})[key]=self.clipboard[2]
         return key
     def paste(self):
+        if self.source_canvas.freehand and not self.source_canvas.outline and self.source_dirty:
+            self.info.setText('왼쪽 그림에서 자유선으로 영역을 먼저 선택하세요.')
+            return
         self.copy_selection()
         if not self.clipboard:self.info.setText('먼저 왼쪽에서 가져올 그림을 선택하세요.');return
         self.record()
         if self.cell() is None:
             self.composition['cells'].append({'rect':[.1,.1,.9,.9]});self.canvas.active=len(self.composition['cells'])-1;self.composition['freeform']=True
-        key=self.store_clipboard();self.cell().update(asset=key,scale=1.,offset=[0.,0.],transparent=len(self.clipboard)>3 and self.clipboard[3],clone_depth=len(self.entry.get('clones',[])))
+        key = self.store_clipboard()
+        cell = self.cell()
+        transparent = len(self.clipboard) > 3 and self.clipboard[3]
+        cell.pop('stretch', None)
+        cell.pop('contain', None)
+        cell.update(asset=key, scale=1., offset=[0., 0.], transparent=transparent,
+                    clone_depth=len(self.entry.get('clones', [])))
+        if transparent:
+            cell['contain'] = True
         self.set_mode('move');self.refresh();self.canvas.setFocus()
     def fill_original_resolution(self):
         self.copy_selection()
@@ -656,7 +669,7 @@ class CutEditor(QDialog):
     def fit(self,cover):
         cell=self.cell()
         if not cell or 'asset' not in cell:return
-        self.record();cell.pop('stretch',None);source=self.assets_cache[cell['asset']];x1,y1,x2,y2=cell['rect'];w,h=(x2-x1)*self.base.width,(y2-y1)*self.base.height
+        self.record();cell.pop('stretch',None);cell.pop('contain',None);source=self.assets_cache[cell['asset']];x1,y1,x2,y2=cell['rect'];w,h=(x2-x1)*self.base.width,(y2-y1)*self.base.height
         cell['scale']=1. if cover else max(.05,min(32.,min(w/source.width,h/source.height)/max(w/source.width,h/source.height)))
         cell['offset']=[0.,0.];self.refresh()
     def remove_layer(self):
