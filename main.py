@@ -433,7 +433,7 @@ class Canvas(QWidget):
 class Window(QMainWindow):
     shareStage=Signal(str)
     def __init__(self):
-        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.94'); self.resize(1400,900)
+        super().__init__();self._placement_ready=False;self._restoring_placement=False;self._last_window_geometry=None;self._minimized_geometry=None; self.setWindowTitle('Photo · 그림 정리와 편집 v0.2.95'); self.resize(1400,900)
         self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'photo.png')))
         self.settings=QSettings('PhotoOrganizer','Photo')
         legacy_size=self.settings.value('tools/size',50,type=int)
@@ -568,10 +568,19 @@ class Window(QMainWindow):
         self.clone_softness=NumericControl();self.clone_softness.setRange(0,100);self.clone_softness.setValue(50)
         self.clone_softness.valueChanged.connect(lambda value:setattr(self.canvas,'clone_softness',value/100))
         softness_tools.addWidget(self.clone_softness)
+        self.blend_label = QLabel('색 섞기 강도 %')
+        self.blend_strength = NumericControl()
+        self.blend_strength.setRange(1, 100)
+        self.blend_strength.setValue(self.settings.value('tools/blendStrength', 55, type=int))
+        self.blend_strength.valueChanged.connect(lambda value: self.settings.setValue('tools/blendStrength', value))
+        brush_tools.addWidget(self.blend_label)
+        brush_tools.addWidget(self.blend_strength)
+        self.blend_label.hide()
+        self.blend_strength.hide()
         brush_tools.addWidget(QLabel('모자이크 강도'))
         self.strength=NumericControl();self.strength.setKeyboardTracking(False);self.strength.setRange(2,100);self.strength.setValue(20);brush_tools.addWidget(self.strength)
         brush_tools.addStretch()
-        for control in (self.brush_size,self.clone_softness,self.strength):
+        for control in (self.brush_size,self.clone_softness,self.strength,self.blend_strength):
             control.setToolTip('숫자 직접 입력 · 휠로 1씩 조절 · Enter로 그림 목록에 복귀')
             control.lineEdit().returnPressed.connect(lambda:self.list.setFocus(Qt.FocusReason.OtherFocusReason))
         delete_region=QPushButton('선택 영역 삭제'); view_controls.addWidget(delete_region); delete_region.clicked.connect(self.remove_region)
@@ -730,6 +739,8 @@ class Window(QMainWindow):
     def change_tool(self,index):
         name=['box','brush','clone','eraser','blend'][index]
         self.canvas.tool=name;self.settings.setValue('tools/selected',index)
+        self.blend_label.setVisible(name == 'blend')
+        self.blend_strength.setVisible(name == 'blend')
         value=self.tool_sizes[name]
         self.brush_size.blockSignals(True);self.brush_size.setValue(value);self.brush_size.blockSignals(False)
         self.canvas.brush_radius=value/2000;self.canvas.update()
@@ -1239,7 +1250,7 @@ class Window(QMainWindow):
             self.status.setText('도장 기준점 선택 완료 · 지울 부위를 드래그하세요.');return
         if event[0] == 'blend_start':
             self.snapshot('색 섞기 브러시')
-            entry.setdefault('blends', []).append(copy.deepcopy(event[1]))
+            entry.setdefault('blends', []).append(dict(copy.deepcopy(event[1]), strength=self.blend_strength.value()))
             self.canvas.active = -1
         elif event[0] == 'blend_move':
             if entry.get('blends'):

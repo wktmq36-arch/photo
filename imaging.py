@@ -39,6 +39,10 @@ def validate_edits(entry):
         if not isinstance(layer.get('regions'),list) or not isinstance(layer.get('clones',[]),list):raise ValueError('잘못된 편집 데이터')
         if not isinstance(layer.get('erasers',[]),list):raise ValueError('잘못된 지우개 데이터')
         if not isinstance(layer.get('blends', []), list):raise ValueError('잘못된 색 섞기 데이터')
+        for stroke in layer.get('blends', []):
+            strength = stroke.get('strength', 55) if isinstance(stroke, dict) else None
+            if type(strength) is not int or not 1 <= strength <= 100:
+                raise ValueError('잘못된 색 섞기 강도')
         for stroke in layer.get('erasers', []) + layer.get('blends', []):
             if not isinstance(stroke,dict) or not isinstance(stroke.get('points'),list) or not stroke['points'] or not all(valid_point(point) for point in stroke['points']) or not 0<stroke.get('radius',0)<=.1:raise ValueError('잘못된 지우개 좌표/크기')
         for stroke in layer.get('clones',[]):
@@ -191,7 +195,8 @@ def render_blends(image, strokes):
         patch = result.crop(box)
         mask = Image.new('L', patch.size)
         draw_clone_mask(mask, points, radius, box[:2])
-        mask = mask.filter(ImageFilter.GaussianBlur(radius * 0.25)).point(lambda value: value * 0.55)
+        strength = stroke.get('strength', 55) / 100
+        mask = mask.filter(ImageFilter.GaussianBlur(radius * 0.25)).point(lambda value: value * strength)
         blended = patch.filter(ImageFilter.GaussianBlur(sigma))
         blended.putalpha(patch.getchannel('A'))
         result.paste(blended, box, mask)
