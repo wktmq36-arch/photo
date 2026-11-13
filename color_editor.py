@@ -1,6 +1,7 @@
 import colorsys
 
-from PIL import Image, ImageChops, ImageStat
+from PIL import Image, ImageChops, ImageFilter, ImageStat
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtCore import Qt, QTimer, QSize
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout,
                                QLabel, QListWidget, QListWidgetItem, QPushButton, QSpinBox, QVBoxLayout)
@@ -36,6 +37,7 @@ class ColorEditor(QDialog):
         self.settings = getattr(parent, 'settings', None)
         self.image = self.preview(entry)
         self.seeds = []
+        self.target_mask = None
         self.selected = None
         self.mask = None
         layout = QVBoxLayout(self)
@@ -67,6 +69,9 @@ class ColorEditor(QDialog):
         self.reference_image = None
         self.reference_mask = None
         self.reference_seeds = []
+        self.selection_history = []
+        self.undo_selection_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)
+        self.undo_selection_shortcut.activated.connect(self.undo_selection)
         reference.addWidget(QLabel('비교 페이지 · 마법봉 클릭 / Shift+클릭으로 기준 영역 추가'))
         self.pages = QListWidget()
         self.pages.setViewMode(QListWidget.ViewMode.IconMode)
@@ -153,6 +158,7 @@ class ColorEditor(QDialog):
         self.reference_image = None
         self.reference_mask = None
         self.reference_seeds.clear()
+        self.selection_history = [step for step in self.selection_history if not step[0]]
         self.match_button.setEnabled(False)
         try:
             if row >= 0:
@@ -165,15 +171,30 @@ class ColorEditor(QDialog):
     def pick_reference(self, point, add=False):
         if self.reference_image is None:
             return
-        if not add:
-            self.reference_seeds.clear()
-        seed = self.seed_at(self.reference_image, point)
-        if seed not in self.reference_seeds:
-            self.reference_seeds.append(seed)
-        self.refresh_reference()
+        self.select_seed(self.seed_at(self.reference_image, point), add, reference=True)
+
+    def select_seed(self, seed, add, reference=False):
+        seeds = self.reference_seeds if reference else self.seeds
+        updated = seeds + [seed] if add and seed not in seeds else seeds[:] if add else [seed]
+        if updated == seeds:
+            return
+        self.selection_history.append((reference, seeds[:]))
+        seeds[:] = updated
+        (self.refresh_reference if reference else self.reselect)()
+
+    def undo_selection(self):
+        if not self.selection_history:
+            return
+        reference, previous = self.selection_history.pop()
+        seeds = self.reference_seeds if reference else self.seeds
+        seeds[:] = previous
+        (self.refresh_reference if reference else self.reselect)()
 
     def refresh_reference(self):
         if not self.reference_seeds:
+            self.reference_mask = None
+            self.reference.set_image(self.reference_image)
+            self.match_button.setEnabled(False)
             return
         image = self.reference_image
         self.reference_mask = self.combined_mask(image, self.reference_seeds)
@@ -221,21 +242,21 @@ class ColorEditor(QDialog):
 
     def change_mode(self, index):
         self.canvas.wand = index == 0
-        self.seeds = []
+        self.seeds.clear()
+        self.selection_history = [step for step in self.selection_history if step[0]]
         self.canvas.clear_selection()
         self.tolerance.setEnabled(True)
         self.guide.setText('클릭: 새 선택 · Shift+클릭: 영역 추가' if self.canvas.wand else '드래그해 색을 조절할 사각형을 그리세요.')
 
     def pick(self, point, add=False):
-        seed = self.seed_at(self.image, point)
-        if not add:
-            self.seeds.clear()
-        if seed not in self.seeds:
-            self.seeds.append(seed)
-        self.reselect()
+        self.select_seed(self.seed_at(self.image, point), add)
 
     def reselect(self):
         if not self.seeds:
+            self.target_mask = None
+            self.selected = None
+            self.mask = None
+            self.refresh()
             return
         mask = self.combined_mask(self.image, self.seeds)
         box = mask.getbbox()
@@ -243,14 +264,12 @@ class ColorEditor(QDialog):
             return
         self.selected = [v / self.image.size[i % 2] for i, v in enumerate(box)]
         self.mask = encode_mask(mask.crop(box))
-        self.canvas.set_image(self.highlight(self.image, mask))
-        self.match_button.setEnabled(self.reference_mask is not None)
-        self.apply_button.setEnabled(any(c.value() for c in (self.hue, self.saturation, self.value)))
-        if self.apply_button.isEnabled():
-            self.timer.start()
+        self.target_mask = mask
+        self.refresh()
 
     def rectangle_selected(self, rect):
         self.selected = rect
+        self.target_mask = None
         self.mask = None
         self.refresh()
 
@@ -270,4 +289,8 @@ class ColorEditor(QDialog):
         image = self.image
         if edit is not None and self.show_result.isChecked():
             image = render_colors(image, [edit])
+        if edit is None and self.target_mask is not None:
+            edge = ImageChops.subtract(self.target_mask, self.target_mask.filter(ImageFilter.MinFilter(3)))
+            image = image.copy()
+            image.paste((255, 179, 71, 255), (0, 0, *image.size), edge)
         self.canvas.set_image(image)
