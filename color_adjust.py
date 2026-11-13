@@ -75,6 +75,9 @@ def validate_colors(edits):
         for key, limit in [('hue', 180), ('saturation', 100), ('value', 100)]:
             if type(edit.get(key)) is not int or abs(edit[key]) > limit:
                 raise ValueError('Invalid color adjustment')
+        depth = edit.get('clone_depth', 0)
+        if type(depth) is not int or depth < 0:
+            raise ValueError('Invalid color adjustment order')
         if 'palette' in edit:
             palette = edit['palette']
             if (not isinstance(palette, list) or len(palette) != 3

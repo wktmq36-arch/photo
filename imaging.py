@@ -243,6 +243,22 @@ class ClonePreview:
         self.result.paste(patch,box);self.count=len(points)
         return self.result
 
+def clone_interval(image, entry, start, end):
+    strokes = entry.get('clones', [])
+    for color in entry.get('colors', []):
+        depth = color.get('clone_depth', len(strokes))
+        if start <= depth < end:
+            image = render_clones(image, strokes[start:depth])
+            image = render_colors(image, [color])
+            start = depth
+    return render_clones(image, strokes[start:end])
+
+
+def pending_colors(entry):
+    depth = len(entry.get('clones', []))
+    return [color for color in entry.get('colors', []) if color.get('clone_depth', depth) >= depth]
+
+
 def cut_clone_depth(entry):
     cells=(entry.get('composition') or {}).get('cells',[])
     return min(len(entry.get('clones',[])),max((c.get('clone_depth',0) for c in cells),default=0))
@@ -257,7 +273,7 @@ def compose_with_retouch(image,entry,cache=None,include_mosaic=True):
     cells=sorted(composition['cells'],key=lambda c:c.get('clone_depth',0))
     from itertools import groupby
     for target,group in groupby(cells,key=lambda c:min(len(strokes),c.get('clone_depth',0))):
-        result=render_clones(result,strokes[applied:target]);applied=target
+        result=clone_interval(result,entry,applied,target);applied=target
         result=render_composition(result,dict(composition,cells=list(group),lines=[]),cache,include_mosaic)
     if composition.get('lines'):result=render_composition(result,dict(composition,cells=[]),cache,include_mosaic)
     return result
@@ -266,10 +282,10 @@ def compose_with_retouch(image,entry,cache=None,include_mosaic=True):
 def render_entry(image,entry,include_mosaic=True):
     # Retouch first; censor last, so a clone can never undo a mosaic.
     composed=compose_with_retouch(crop_base(image,entry,include_mosaic),entry,include_mosaic=include_mosaic)
-    cloned=render_clones(composed,entry.get('clones',[])[cut_clone_depth(entry):])
+    cloned=clone_interval(composed, entry, cut_clone_depth(entry), len(entry.get('clones', [])))
     cloned = render_blends(cloned, entry.get('blends', []))
     censored=render_regions(cloned,entry['regions']) if include_mosaic and entry['regions'] else cloned
-    return render_colors(render_erasers(censored,entry.get('erasers',[])), entry.get('colors', []))
+    return render_colors(render_erasers(censored,entry.get('erasers',[])), pending_colors(entry))
 
 def export_image(entry, destination, fmt, include_mosaic=True):
     result = render_entry(read_pixels(entry['path']), entry, include_mosaic=include_mosaic)

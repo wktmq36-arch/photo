@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (QDialog,QWidget,QVBoxLayout,QHBoxLayout,QPushButt
     QAbstractItemView,QMenu,QCheckBox)
 from color_adjust import render_colors
 from composition import empty_composition,paired_asset,pixel_asset,decode_asset,render_composition
-from imaging import read_pixels,render_entry,render_clones,render_regions,render_blends,render_erasers,crop_base,compose_with_retouch,cut_clone_depth
+from imaging import read_pixels,render_entry,render_clones,render_regions,render_blends,render_erasers,crop_base,compose_with_retouch,cut_clone_depth,clone_interval,pending_colors
 
 
 def pixmap_for(image):
@@ -459,8 +459,8 @@ class CutEditor(QDialog):
         if not self.timer.isActive():self.timer.start()
     def refresh(self):
         self.timer.stop();image=compose_with_retouch(self.preview,dict(self.entry,composition=self.composition),self.assets_cache)
-        image=render_clones(image,self.entry.get('clones',[])[cut_clone_depth(dict(self.entry,composition=self.composition)):]);image=render_blends(image,self.entry.get('blends',[]));image=render_regions(image,self.entry['regions']);image=render_erasers(image,self.entry.get('erasers',[]))
-        image = render_colors(image, self.entry.get('colors', []))
+        image=clone_interval(image,self.entry,cut_clone_depth(dict(self.entry,composition=self.composition)),len(self.entry.get('clones',[])));image=render_blends(image,self.entry.get('blends',[]));image=render_regions(image,self.entry['regions']);image=render_erasers(image,self.entry.get('erasers',[]))
+        image = render_colors(image, pending_colors(self.entry))
         self.canvas.set_image(image);self.canvas.cells=self.composition['cells']
         self.canvas.active=min(self.canvas.active,len(self.canvas.cells)-1)
         self.gutter.blockSignals(True);self.gutter.setValue(round(self.composition.get('gutter',0.)*self.base.width));self.gutter.blockSignals(False)
